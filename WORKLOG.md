@@ -300,3 +300,9 @@ gives 7:53.60, 4.42× faster than the baseline measured-action sum.
 All generated outputs remain under ignored `artifacts/`. The node-local stage
 and virtual environment are disposable and will be removed automatically when
 the interactive allocation ends.
+
+## 2026-09-10 — Duplicate input cleanup
+
+- Removed the untracked `data/samples.local-inputs-20260908/` safety backup at
+  the user's request, reclaiming approximately 11 GiB.
+- Kept the canonical `data/samples` Git submodule and its Hyy inputs unchanged.
