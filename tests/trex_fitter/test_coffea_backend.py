@@ -5,6 +5,7 @@ import tomllib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import awkward as ak
 import hist
@@ -16,12 +17,41 @@ from trex_fitter.coffea_backend.config import parse_config, split_top_level
 from trex_fitter.coffea_backend.expressions import Expression, boolean_mask
 from trex_fitter.coffea_backend.verify import verify_config
 from trex_fitter.coffea_backend.writer import _fold_flow, _make_histogram, _sanitize
+from trex_fitter.config_verify import verify_config as verify_analysis_config
+from trex_fitter import runner
 
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 
 
 class ConfigTests(unittest.TestCase):
+    def test_hyy_complete_basic_analysis_is_valid(self):
+        report = verify_analysis_config(REPOSITORY / "data/configs/examples/hyy.config")
+        self.assertTrue(report.valid, report.errors)
+        self.assertEqual(
+            report.blocks,
+            {"Job": 1, "Fit": 1, "Region": 6, "Sample": 7, "NormFactor": 7},
+        )
+        self.assertEqual(report.errors, [])
+
+    def test_analysis_verifier_checks_cross_references(self):
+        with TemporaryDirectory() as temporary:
+            path = Path(temporary) / "bad-reference.config"
+            path.write_text(
+                'Job: "x"\n  POI: "mu"\n  ReadFrom: NTUP\n'
+                '  NtuplePaths: "inputs"\n  Lumi: 1\n'
+                'Region: "sr"\n  Variable: "x",10,0,1\n  Selection: "1"\n'
+                'Sample: "data"\n  Type: DATA\n  NtupleFiles: "data"\n'
+                'NormFactor: "mu"\n  Samples: missing\n  Regions: nowhere\n'
+                '  Nominal: 1\n  Min: 0\n  Max: 2\n'
+            )
+            report = verify_analysis_config(path)
+            self.assertFalse(report.valid)
+            self.assertEqual(
+                {issue.code for issue in report.errors},
+                {"unknown_sample", "unknown_region"},
+            )
+
     def test_hyy_config(self):
         config = parse_config(REPOSITORY / "data/configs/examples/hyy.config")
         self.assertEqual(config.name, "hyy")
@@ -56,7 +86,7 @@ class ConfigTests(unittest.TestCase):
         report = verify_config(REPOSITORY / "data/configs/examples/hyy.config")
         self.assertTrue(report.compatible)
         self.assertEqual((report.jobs, report.regions, report.samples), (1, 6, 7))
-        self.assertTrue(any(issue.code == "downstream_block" for issue in report.issues))
+        self.assertEqual(report.issues, [])
 
     def test_verifier_rejects_unsupported_histogram_setting(self):
         with TemporaryDirectory() as temporary:
@@ -251,6 +281,31 @@ class EnvironmentTests(unittest.TestCase):
         self.assertTrue(
             any(item.startswith("atlas-schema==") for item in extras["atlas-schema"])
         )
+
+
+class RunnerTests(unittest.TestCase):
+    def test_related_native_actions_share_one_container(self):
+        config = REPOSITORY / "data/configs/examples/hyy.config"
+        with patch.object(runner, "container_cmd", return_value=["podman"]), patch.object(
+            runner.podman_trex, "run"
+        ) as execute:
+            runner.run_actions(
+                config,
+                ["w", "f", "s"],
+                REPOSITORY / "artifacts/test",
+                compatibility_mode=False,
+            )
+        execute.assert_called_once()
+        self.assertIn("trex-fitter wfs", execute.call_args.kwargs["label"])
+
+    def test_runner_skips_recursive_symlink_discovery(self):
+        with patch.object(
+            runner.podman_trex,
+            "discover_symlink_target_mounts",
+            side_effect=AssertionError("recursive scan should not run"),
+        ):
+            command = runner.container_cmd("true")
+        self.assertIn(f"{runner.SAMPLES_DIR}:/workdir/inputs:ro", command)
 
 
 if __name__ == "__main__":

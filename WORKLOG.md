@@ -329,8 +329,9 @@ the interactive allocation ends.
   inputs or invoke TRExFitter. It validates typed Job/Region/Sample basics,
   fixed binning, safe expression syntax, required MC weights, unique names,
   and the explicit feature boundary.
-- The Hyy config passes with zero errors. Its 48 warnings identify presentation
-  settings and Fit/NormFactor blocks that nominal histogramming does not use.
+- The initial Hyy compatibility report passed with zero errors but emitted 48
+  informational warnings for downstream settings; the later UX cleanup below
+  removes those messages and validates the complete basic analysis separately.
 - Corrected two source-audit discrepancies: exact v1.10 empty-bin error
   handling and ROOT histogram/x-axis titles. Strengthened differential checks
   to include those titles.
@@ -364,3 +365,22 @@ the interactive allocation ends.
   complete environment occupies approximately 815 MiB; its size is primarily
   Coffea's scientific and distributed-I/O dependency graph, not ROOT or ML
   frameworks.
+
+## 2026-09-10 — Runner and verifier UX cleanup
+
+- Separated whole-analysis config validation from Coffea backend capability
+  checks. The fast Pydantic verifier now covers every basic block in the Hyy
+  analysis (Job, Fit, Region, Sample, and NormFactor), including references,
+  and reports errors rather than histogramming-related warnings.
+- Kept the Coffea compatibility gate separate and removed 48 noisy messages
+  for settings and blocks that are correctly consumed by later TRExFitter
+  stages.
+- Added pytest as a uv development dependency and documented the colored test
+  command.
+- Made container output stream as it is produced, disabled the runner's costly
+  recursive repository symlink scan in favor of its explicit samples mount,
+  and combined related native actions such as `wfs` into one container run.
+- Timed the optimized `runner.py --check` path at 3.14 seconds on the NERSC
+  login host; the check streamed the StatAnalysis version banner immediately.
+- Documented that the pinned 8 GiB image is cached locally and that
+  atlas-schema is optional and non-default for these legacy flat ntuples.

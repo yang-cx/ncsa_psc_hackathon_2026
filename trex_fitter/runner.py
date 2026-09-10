@@ -27,6 +27,10 @@ SAMPLES_DIR = PROJECT_DIR / "data" / "samples"
 sys.path.insert(0, str(TREX_DIR / "scripts"))
 import trex as podman_trex  # noqa: E402
 
+# trex.py is also usable standalone from trex_fitter/, while this runner mounts
+# the repository root so configs, inputs, and ignored artifacts share /workdir.
+podman_trex.PROJECT_DIR = PROJECT_DIR
+
 
 READ_FROM_RE = re.compile(r"^\s*ReadFrom:\s*(\S+)", re.MULTILINE)
 MULTIFIT_RE = re.compile(r"^\s*MultiFit:\s*", re.MULTILINE)
@@ -89,7 +93,11 @@ def container_cmd(command: str) -> list[str]:
         raise RuntimeError(f"Missing H→γγ input directory: {SAMPLES_DIR / 'hyy'}")
     if not (SAMPLES_DIR / "examples").is_dir():
         raise RuntimeError(f"Missing shared example inputs: {SAMPLES_DIR / 'examples'}")
-    command_line = podman_trex.container_cmd(command)
+    # The runner has an explicit input mount, so it need not recursively scan
+    # the repository (including large submodules) for external symlinks.
+    command_line = podman_trex.container_cmd(
+        command, discover_external_mounts=False
+    )
     workdir_index = command_line.index("-w")
     command_line[workdir_index:workdir_index] = [
         "--userns=keep-id",
@@ -164,13 +172,19 @@ def run_actions(
             f"mkdir -p {shlex.quote(container_work_dir)} && "
             f"cd {shlex.quote(container_work_dir)} && "
         )
-    for action in actions:
-        command = f"{command_prefix}trex-fitter {shlex.quote(action)} {shlex.quote(config_for_run)}"
-        podman_trex.run(
-            container_cmd(command),
-            label=f"trex-fitter {action} {path.name}",
-            log_dir=log_dir,
-        )
+    # TRExFitter accepts combined action strings and executes them in its
+    # canonical order. Keeping related stages in one process avoids repeated
+    # startup of the 8 GiB container image.
+    combined_actions = "".join(actions)
+    command = (
+        f"{command_prefix}trex-fitter {shlex.quote(combined_actions)} "
+        f"{shlex.quote(config_for_run)}"
+    )
+    podman_trex.run(
+        container_cmd(command),
+        label=f"trex-fitter {combined_actions} {path.name}",
+        log_dir=log_dir,
+    )
 
 
 def main() -> None:
@@ -245,11 +259,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # trex.py normally assumes trex_fitter/ is /workdir. The example configs
-    # instead live one level above it and refer to /workdir/inputs, so mount the
-    # repository root consistently for every invocation.
-    podman_trex.PROJECT_DIR = PROJECT_DIR
-
     if args.check:
         check_setup()
 
@@ -284,6 +293,15 @@ def main() -> None:
         print(validate(path))
         print("backend:", args.backend)
         print("actions:", " ".join(actions))
+        native_actions = [
+            action
+            for action in actions
+            if not (args.backend == "coffea" and action == "n")
+        ]
+        if args.backend == "coffea" and "n" in actions:
+            print("Coffea action: n")
+        if native_actions:
+            print("native container action string:", "".join(native_actions))
         print("log directory:", log_dir)
         if args.backend == "coffea":
             print("Coffea output base:", args.output_dir or PROJECT_DIR)

@@ -28,7 +28,7 @@ container. For static config verification:
 ```bash
 module load python
 uv sync --locked
-uv run --locked python -m trex_fitter.coffea_backend.verify \
+uv run --locked python -m trex_fitter.config_verify \
   data/configs/examples/hyy.config
 ```
 
@@ -40,8 +40,9 @@ uv run --locked --extra coffea python trex_fitter/runner.py \
   data/configs/examples/hyy.config --backend coffea --actions n
 ```
 
-Add `--extra atlas-schema` to both commands only when that optional schema is
-needed.
+The default Coffea path uses `BaseSchema`; `atlas-schema` is not needed for the
+legacy flat H→γγ ntuples. Add `--extra atlas-schema --coffea-schema atlas` only
+when testing that optional collection layout.
 
 `bash training/bootstrap_verl.sh` remains available when only the training
 dependency needs to be initialized. Download the reference training Parquet

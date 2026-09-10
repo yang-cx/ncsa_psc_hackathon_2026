@@ -1,9 +1,8 @@
-"""Static compatibility checks for the minimal Coffea NTUP backend.
+"""Check whether the Coffea backend can replace TRExFitter action ``n``.
 
-This verifier intentionally answers a narrower question than TRExFitter's own
-configuration parser: can this repository's nominal H->gamma gamma Coffea
-backend represent the requested histogramming without silently dropping an
-analysis operation?
+This is a backend capability check, not the analysis config verifier. Blocks
+and settings consumed only by later, native TRExFitter stages are accepted
+silently because the Coffea backend does not replace those stages.
 """
 
 from __future__ import annotations
@@ -255,17 +254,6 @@ def verify_config(path: Path | str) -> VerificationReport:
 
     for block in blocks:
         if block.kind in _DOWNSTREAM_BLOCKS:
-            issues.append(
-                VerificationIssue(
-                    severity="warning",
-                    code="downstream_block",
-                    message=(
-                        "not used by histogramming; passed to unmodified "
-                        "TRExFitter later"
-                    ),
-                    **_location(block),
-                )
-            )
             continue
         if block.kind in _HISTOGRAM_AFFECTING_BLOCKS:
             issues.append(
@@ -297,14 +285,7 @@ def verify_config(path: Path | str) -> VerificationReport:
             if setting in supported:
                 continue
             if setting in downstream:
-                issues.append(
-                    VerificationIssue(
-                        severity="warning",
-                        code="downstream_setting",
-                        message="not used by nominal histogram filling",
-                        **_location(block, setting),
-                    )
-                )
+                continue
             else:
                 issues.append(
                     VerificationIssue(

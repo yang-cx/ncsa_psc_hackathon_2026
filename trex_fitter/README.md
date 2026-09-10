@@ -54,7 +54,7 @@ verification:
 ```bash
 module load python
 uv sync --locked
-uv run --locked python -m trex_fitter.coffea_backend.verify \
+uv run --locked python -m trex_fitter.config_verify \
   data/configs/examples/hyy.config
 ```
 
@@ -64,11 +64,12 @@ Install the optional Coffea histogramming stack on a compute node with:
 uv sync --locked --extra coffea
 ```
 
-Add `--extra atlas-schema` to both `uv sync` and `uv run` to enable the
-optional atlas-schema collection layout. The default `base` schema exposes the
-original branch names exactly as TREx expressions spell them. The expression
-resolver understands both layouts. TRExFitter and ROOT remain in the pinned
-StatAnalysis container and are not installed by `uv`.
+The default `base` schema exposes original branch names exactly as the legacy
+flat ntuples and TREx expressions spell them. `atlas-schema` is therefore not
+part of the normal workflow. To test its optional collection layout, add
+`--extra atlas-schema` to `uv sync` and `uv run`, then pass
+`--coffea-schema atlas`. TRExFitter and ROOT remain in the pinned StatAnalysis
+container and are not installed by `uv`.
 
 On the tested NERSC Python 3.11 environment, the default verifier environment
 occupies about 82 MiB. The complete Coffea plus atlas-schema environment is
@@ -103,6 +104,11 @@ benchmark or complete run under ignored `artifacts/`. When later actions are
 requested, the runner starts TRExFitter in that output directory so it reads
 the Coffea-produced Job directory in place.
 
+Related native stages are passed as one TRExFitter action string (for example,
+`wfs`) and run in one container. The pinned image is cached locally by
+Podman-HPC; `--rm` removes the finished container, not the 8 GiB image. Runner
+output is streamed immediately while separate stdout/stderr logs are retained.
+
 `--coffea-stage-dir` is strongly recommended on NERSC. It performs one
 sequential copy of each configured ROOT file to node-local storage before
 Coffea starts its parallel, branch-oriented reads. Staging time is included in
@@ -121,20 +127,33 @@ uv run --locked --extra coffea python -m trex_fitter.coffea_backend.compare \
 Compatibility means identical ROOT paths, bin edges, ROOT histogram/axis
 titles, and numerically consistent bin contents and variances.
 
-## Fast static config verification
+## Fast analysis config verification
 
-Check whether a config fits the supported nominal-NTUP subset without opening
-ROOT files or starting TRExFitter:
+Validate the complete basic analysis structure used by `hyy.config`—Job, Fit,
+Region, Sample, and NormFactor blocks plus their cross-references—without
+opening ROOT files or starting TRExFitter:
+
+```bash
+uv run --locked python -m trex_fitter.config_verify \
+  data/configs/examples/hyy.config
+```
+
+The Pydantic-backed verifier prints a short `VALID`/`INVALID` result and errors
+only; it does not emit backend-related warnings. It implements the project's
+source-grounded basic v1.10 profile, not every advanced TRExFitter option and
+not the physics intent of an analysis. Check the experimental Coffea `n`
+compatibility separately when needed:
 
 ```bash
 uv run --locked python -m trex_fitter.coffea_backend.verify \
   data/configs/examples/hyy.config
 ```
 
-The Pydantic-backed report separates errors from warnings. Histogram-affecting
-unsupported features are errors; fit and normalization blocks used later by
-unmodified TRExFitter are warnings. This verifies backend compatibility, not
-the full TRExFitter language or the physics intent of an analysis.
+Run the automated tests with pytest's structured, colored terminal output:
+
+```bash
+uv run --locked --extra coffea pytest -v --color=yes
+```
 
 The verified operation map is in
 [`coffea_backend/ATOMIC_OPERATIONS.md`](coffea_backend/ATOMIC_OPERATIONS.md).
