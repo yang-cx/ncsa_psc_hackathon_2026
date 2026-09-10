@@ -404,3 +404,25 @@ the interactive allocation ends.
   expression, missing-value, and mock-evaluation regressions. No full native
   fit was rerun. The staging collision issue was explained but not changed in
   this review-fix scope.
+
+## Static semantics and optional input verification
+
+- Added source-derived action-dependent region checks, POIAsimov syntax,
+  reference checks, overlapping norm-factor attachment detection, numeric
+  constraints and POI ranking-list sizes. Corrected POI resolution for inline
+  norm factors, nuisance parameters, templates, shape expressions and EFT.
+- Added read-only `--check-inputs` with separate report status and diagnostics:
+  ROOT file/tree/branch metadata for supported NTUP configs, and nominal TH1
+  names/axes for simple HIST configs. Unsupported layouts fail explicitly.
+- Added an optional lightweight `inputs` dependency extra and documented exact
+  coverage, stricter scan ranges, and remaining ReadFullConfig differences.
+- Normalized combined runner actions: `--actions nwsf` correctly routes `n`
+  to Coffea, and forwards `wsf` to native TRExFitter. The runner checks planned
+  fit semantics before Coffea input processing; the standalone histogrammer
+  validates only its own `n` action.
+- Unified execution gating now ignores diagnostic warnings when the verifier
+  considers the config compatible, keeping report and runtime verdicts aligned.
+- Validation: 59 tests passed. Optional metadata checks passed on all 26 Hyy
+  ROOT input files (trees and required branches); report saved under ignored
+  `artifacts/trex_fitter/verifier-input-check.json`. No histogram filling or
+  native fit was run for these checks.

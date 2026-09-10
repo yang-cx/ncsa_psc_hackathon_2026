@@ -38,7 +38,7 @@ def main() -> None:
         runner.podman_trex.to_container_path(log_dir)
     except ValueError as error:
         parser.error(str(error))
-    verification = verify_config(config)
+    verification = verify_config(config, actions=args.actions)
     result = {"success": False, "mock": args.mock, "config": str(config),
               "verification": verification.model_dump(), "significance": None,
               "returncode": None, "timed_out": False}

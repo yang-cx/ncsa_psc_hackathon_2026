@@ -27,6 +27,7 @@ class ConfigIssue(BaseModel):
     name: str | None = None
     setting: str | None = None
     line: int | None = None
+    source_ref: str | None = None
 
 
 class _AnalysisReport(BaseModel):
@@ -47,10 +48,14 @@ class VerificationReport(BaseModel):
     blocks: dict[str, int]
     errors: list[ConfigIssue]
     coffea_issues: list[dict[str, Any]]
+    inputs_valid: bool | None = None
+    input_issues: list[ConfigIssue] = Field(default_factory=list)
+    input_files_checked: int = 0
 
     def raise_for_errors(self) -> None:
         messages = [issue.message for issue in self.errors]
-        messages.extend(str(issue["message"]) for issue in self.coffea_issues)
+        messages.extend(str(issue["message"]) for issue in self.coffea_issues if issue["severity"] == "error")
+        messages.extend(issue.message for issue in self.input_issues)
         if messages:
             raise ConfigError("; ".join(messages))
 
@@ -92,7 +97,7 @@ class _Region(BaseModel):
 class _Sample(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    sample_type: Literal["DATA", "BACKGROUND", "SIGNAL"]
+    sample_type: Literal["DATA", "BACKGROUND", "SIGNAL", "GHOST", "EFT"]
     files: list[str] = Field(min_length=1)
 
 
@@ -146,7 +151,7 @@ def _model_errors(block: _Block, error: ValidationError) -> list[ConfigIssue]:
     ]
 
 
-def _verify_analysis_config(path: Path | str) -> _AnalysisReport:
+def _verify_analysis_config(path: Path | str, actions="nwfs") -> _AnalysisReport:
     """Validate the project's complete basic analysis profile."""
     path = Path(path).resolve()
     try:
@@ -203,8 +208,8 @@ def _verify_analysis_config(path: Path | str) -> _AnalysisReport:
     for block in by_kind["Fit"]:
         try:
             _Fit.model_validate({
-                "fit_type": _unquote(block.values.get("FitType", "")).upper(),
-                "fit_region": _unquote(block.values.get("FitRegion", "")).upper(),
+                "fit_type": _unquote(block.values.get("FitType", "SPLUSB")).upper(),
+                "fit_region": _unquote(block.values.get("FitRegion", "CRSR")).upper(),
                 "poi_asimov": _unquote(block.values["POIAsimov"]) if "POIAsimov" in block.values else None,
             })
         except ValidationError as error:
@@ -240,48 +245,39 @@ def _verify_analysis_config(path: Path | str) -> _AnalysisReport:
         except ValidationError as error:
             errors.extend(_model_errors(block, error))
 
-    sample_names = {block.name for block in by_kind["Sample"]}
-    region_names = {block.name for block in by_kind["Region"]}
     for block in by_kind["NormFactor"]:
         try:
             model = _NormFactor.model_validate({
-                "samples": split_top_level(block.values.get("Samples", "")),
+                "samples": split_top_level(block.values.get("Samples", "all")),
                 "regions": split_top_level(block.values.get("Regions", "")),
-                "nominal": _unquote(block.values.get("Nominal", "")),
-                "minimum": _unquote(block.values.get("Min", "")),
-                "maximum": _unquote(block.values.get("Max", "")),
+                "nominal": _unquote(block.values.get("Nominal", "1")),
+                "minimum": _unquote(block.values.get("Min", "0")),
+                "maximum": _unquote(block.values.get("Max", "10")),
             })
-            missing_samples = sorted(set(model.samples) - sample_names)
-            missing_regions = sorted(set(model.regions) - region_names)
-            if missing_samples:
-                errors.append(_issue(block, "unknown_sample", f"unknown Samples reference(s): {', '.join(missing_samples)}", "Samples"))
-            if missing_regions:
-                errors.append(_issue(block, "unknown_region", f"unknown Regions reference(s): {', '.join(missing_regions)}", "Regions"))
         except ValidationError as error:
             errors.extend(_model_errors(block, error))
 
     for kind, selected in by_kind.items():
+        if kind == "NormFactor":
+            continue  # Check overlapping attachments rather than names alone.
         names = [block.name for block in selected]
         duplicates = sorted(name for name, count in Counter(names).items() if count > 1)
         if duplicates:
             errors.append(ConfigIssue(code="duplicate_name", message=f"duplicate {kind} names: {', '.join(duplicates)}", block=kind))
 
-    if len(by_kind["Job"]) == 1:
-        poi = _unquote(by_kind["Job"][0].values.get("POI", ""))
-        declared = {block.name for block in by_kind["NormFactor"]}
-        if poi and poi not in declared:
-            errors.append(_issue(by_kind["Job"][0], "unknown_poi", f"POI {poi!r} does not name a NormFactor block", "POI"))
+    from .semantics import check_semantics
+    errors.extend(ConfigIssue(**item) for item in check_semantics(blocks, actions))
 
     return _AnalysisReport(config=str(path), valid=not errors, blocks=counts, errors=errors)
 
 
-def verify_config(path: Path | str) -> VerificationReport:
+def verify_config(path: Path | str, *, actions="nwfs", check_inputs=False, project_dir=None) -> VerificationReport:
     """Run both basic analysis validation and Coffea compatibility checking."""
-    analysis = _verify_analysis_config(path)
+    analysis = _verify_analysis_config(path, actions)
     from .coffea_backend.verify import verify_config as _verify_coffea_config
 
     coffea = _verify_coffea_config(path)
-    return VerificationReport(
+    report = VerificationReport(
         config=analysis.config,
         valid=analysis.valid and coffea.compatible,
         analysis_valid=analysis.valid,
@@ -290,14 +286,25 @@ def verify_config(path: Path | str) -> VerificationReport:
         errors=analysis.errors,
         coffea_issues=[issue.model_dump() for issue in coffea.issues],
     )
+    if check_inputs:
+        from .input_checks import inspect_inputs
+        findings, count = inspect_inputs(Path(path), Path(project_dir) if project_dir else Path(__file__).resolve().parents[1])
+        report.input_issues = [ConfigIssue(**item) for item in findings]
+        report.inputs_valid = not findings
+        report.input_files_checked = count
+        report.valid = report.valid and report.inputs_valid
+    return report
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("config", type=Path)
+    parser.add_argument("--actions", nargs="+", default=["n", "w", "f", "s"], help="Planned actions for conditional static checks (default: n w f s)")
+    parser.add_argument("--check-inputs", action="store_true", help="Inspect ROOT metadata without reading event arrays; requires uproot")
+    parser.add_argument("--project-dir", type=Path, help="Host root corresponding to /workdir (default: repository root)")
     parser.add_argument("--json", type=Path, dest="json_path", help="also write the full machine-readable report")
     args = parser.parse_args()
-    report = verify_config(args.config)
+    report = verify_config(args.config, actions=args.actions, check_inputs=args.check_inputs, project_dir=args.project_dir)
     status = "VALID" if report.analysis_valid else "INVALID"
     counts = ", ".join(f"{kind}={count}" for kind, count in sorted(report.blocks.items()))
     print(f"{status}: {args.config} ({counts})")
@@ -312,6 +319,10 @@ def main() -> None:
     if args.json_path:
         args.json_path.parent.mkdir(parents=True, exist_ok=True)
         args.json_path.write_text(json.dumps(report.model_dump(), indent=2) + "\n")
+    if report.inputs_valid is not None:
+        print(f"INPUTS {'VALID' if report.inputs_valid else 'INVALID'}: {report.input_files_checked} file(s) checked")
+        for issue in report.input_issues:
+            print(f"  ERROR [{issue.code}] {issue.message}")
     raise SystemExit(0 if report.valid else 1)
 
 

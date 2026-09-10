@@ -86,7 +86,7 @@ def run_histogramming(
     schema: str = "base",
     stage_dir: Path | None = None,
 ) -> RunSummary:
-    verify_config(config_path).raise_for_errors()
+    verify_config(config_path, actions="n").raise_for_errors()
     config = parse_config(config_path)
     if not config.split_histo_files:
         raise ValueError(

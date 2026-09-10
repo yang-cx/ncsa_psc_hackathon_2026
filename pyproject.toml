@@ -10,6 +10,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+inputs = ["uproot>=5.6,<6"]
 coffea = [
   "coffea==2025.7.0",
   "hist>=2.8,<3",

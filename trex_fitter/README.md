@@ -129,6 +129,9 @@ titles, and numerically consistent bin contents and variances.
 
 ## Fast analysis config verification
 
+See [VERIFICATION.md](VERIFICATION.md) for the default semantic checks, optional
+`--check-inputs`, report fields, and differences from native `ReadFullConfig`.
+
 Validate both the complete basic analysis structure used by `hyy.config`—Job,
 Fit, Region, Sample, and NormFactor blocks plus their cross-references—and
 Coffea `n` compatibility without opening ROOT files or starting TRExFitter:

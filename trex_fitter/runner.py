@@ -276,7 +276,7 @@ def main() -> None:
 
     try:
         path = config_path(args.config)
-        actions = args.actions or default_actions(path)
+        actions = list("".join(args.actions or default_actions(path)))
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -317,6 +317,8 @@ def main() -> None:
     )
     if args.backend == "coffea" and "n" in actions:
         output_base = (args.output_dir or PROJECT_DIR).resolve()
+        from trex_fitter.config_verify import verify_config
+        verify_config(path, actions=actions).raise_for_errors()
         try:
             from trex_fitter.coffea_backend import run_histogramming
         except ImportError as exc:
