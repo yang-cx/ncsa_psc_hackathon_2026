@@ -14,6 +14,7 @@ from coffea.nanoevents import BaseSchema
 
 from .config import parse_config, resolve_all_files
 from .processor import TrexNtupleProcessor
+from .verify import verify_config
 from .writer import write_histograms
 
 
@@ -85,6 +86,7 @@ def run_histogramming(
     schema: str = "base",
     stage_dir: Path | None = None,
 ) -> RunSummary:
+    verify_config(config_path).raise_for_errors()
     config = parse_config(config_path)
     if not config.split_histo_files:
         raise ValueError(

@@ -124,6 +124,11 @@ def _parse_blocks(path: Path) -> list[_Block]:
         elif current is None:
             raise ConfigError(f"{path}:{line_number}: setting appears before a block")
         else:
+            if key.strip() in current.values:
+                raise ConfigError(
+                    f"{path}:{line_number}: duplicate setting {key.strip()!r} "
+                    f"in {current.kind} {current.name!r}"
+                )
             current.values[key.strip()] = value.strip()
     return blocks
 

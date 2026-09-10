@@ -7,6 +7,7 @@ from pathlib import Path
 import hist
 import numpy as np
 import uproot
+from uproot.writing import identify
 
 from .config import AnalysisConfig, RegionConfig
 
@@ -33,11 +34,18 @@ def _sanitize(
     bad = nominal_values <= 0
     if not np.any(bad):
         return nominal_values, nominal_variances
-    positive_errors = np.sqrt(nominal_variances[nominal_variances > 0])
-    replacement_error = float(positive_errors.min()) if len(positive_errors) else 1.0
+    # SampleHist::FixEmptyBins in TRExFitter v1.10.0 preserves an existing
+    # error in a non-positive bin. For an errorless bin it borrows the smallest
+    # error from a positive-content bin, falling back to 1e-6.
+    donors = (nominal_values > 0) & (nominal_variances > 0)
+    positive_errors = np.sqrt(nominal_variances[donors])
+    replacement_error = (
+        float(positive_errors.min()) if len(positive_errors) else 1.0e-6
+    )
     original_integral = float(nominal_values.sum())
     nominal_values[bad] = 1.0e-6
-    nominal_variances[bad] = replacement_error**2
+    missing_error = bad & (nominal_variances <= 0)
+    nominal_variances[missing_error] = replacement_error**2
     modified_integral = float(nominal_values.sum())
     if original_integral > 0 and modified_integral > 0:
         nominal_values *= original_integral / modified_integral
@@ -45,24 +53,43 @@ def _sanitize(
 
 
 def _make_histogram(
-    region: RegionConfig, values: np.ndarray, variances: np.ndarray
-) -> hist.Hist:
-    output = hist.Hist(
-        hist.axis.Regular(
-            region.bins,
-            region.minimum,
-            region.maximum,
-            name=region.name,
-            label=region.variable_title,
-            underflow=True,
-            overflow=True,
-        ),
-        storage=hist.storage.Weight(),
+    region: RegionConfig,
+    values: np.ndarray,
+    variances: np.ndarray,
+    *,
+    title: str,
+    variable_title: str,
+) -> object:
+    # Construct the writable ROOT object explicitly. hist.Hist deliberately
+    # substitutes an empty axis label with its Python axis name, whereas the
+    # TREx `_orig` objects have an exactly empty TAxis::fTitle.
+    data = np.zeros(region.bins + 2, dtype=np.float64)
+    sumw2 = np.zeros(region.bins + 2, dtype=np.float64)
+    data[1:-1] = values
+    sumw2[1:-1] = variances
+    centers = np.linspace(
+        region.minimum + (region.maximum - region.minimum) / (2 * region.bins),
+        region.maximum - (region.maximum - region.minimum) / (2 * region.bins),
+        region.bins,
     )
-    view = output.view(flow=False)
-    view.value = values
-    view.variance = variances
-    return output
+    return identify.to_TH1x(
+        fName=None,
+        fTitle=title,
+        data=data,
+        fEntries=float(values.sum()),
+        fTsumw=float(values.sum()),
+        fTsumw2=float(variances.sum()),
+        fTsumwx=float(np.dot(values, centers)),
+        fTsumwx2=float(np.dot(values, centers**2)),
+        fSumw2=sumw2,
+        fXaxis=identify.to_TAxis(
+            fName="xaxis",
+            fTitle=variable_title,
+            fNbins=region.bins,
+            fXmin=region.minimum,
+            fXmax=region.maximum,
+        ),
+    )
 
 
 def write_histograms(
@@ -94,13 +121,25 @@ def write_histograms(
                 )
                 prefix = f"{region.name}/{sample.name}/nominal/{region.name}_{sample.name}"
                 root_file[prefix + "_orig"] = _make_histogram(
-                    region, original_values, original_variances
+                    region,
+                    original_values,
+                    original_variances,
+                    title="h",
+                    variable_title="",
                 )
                 root_file[prefix] = _make_histogram(
-                    region, nominal_values, nominal_variances
+                    region,
+                    nominal_values,
+                    nominal_variances,
+                    title=sample.title,
+                    variable_title=region.variable_title,
                 )
                 root_file[prefix + "_regBin"] = _make_histogram(
-                    region, nominal_values, nominal_variances
+                    region,
+                    nominal_values,
+                    nominal_variances,
+                    title=sample.title,
+                    variable_title=region.variable_title,
                 )
         (binning_dir / f"{region.name}.txt").write_text(f"{region.bins}\n")
     return analysis_dir

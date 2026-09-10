@@ -6,7 +6,7 @@ the expensive histogramming (`n`) action and pass the resulting ROOT
 histograms to unmodified TRExFitter `w`, `f`, and `s` actions.
 
 The native TREx `.config` is the source of truth for both backends. The Coffea
-backend currently supports the subset exercised by `hyy.config`: `Job`,
+backend intentionally supports the basic subset exercised by `hyy.config`: `Job`,
 `Region`, and `Sample` definitions, flat or jagged branch expressions, nominal
 MC weights, and split histogram files. It fails explicitly on `Systematic`
 blocks rather than silently producing incomplete histograms.
@@ -101,6 +101,24 @@ Compare a completed candidate against a TRExFitter reference:
   --json artifacts/trex_fitter/coffea-full/comparison.json
 ```
 
-Compatibility means identical ROOT paths and bin edges plus numerically
-consistent bin contents and variances. ROOT object titles and other cosmetic
-metadata are not part of the contract.
+Compatibility means identical ROOT paths, bin edges, ROOT histogram/axis
+titles, and numerically consistent bin contents and variances.
+
+## Fast static config verification
+
+Check whether a config fits the supported nominal-NTUP subset without opening
+ROOT files or starting TRExFitter:
+
+```bash
+/tmp/trex-coffea/bin/python -m trex_fitter.coffea_backend.verify \
+  data/configs/examples/hyy.config
+```
+
+The Pydantic-backed report separates errors from warnings. Histogram-affecting
+unsupported features are errors; fit and normalization blocks used later by
+unmodified TRExFitter are warnings. This verifies backend compatibility, not
+the full TRExFitter language or the physics intent of an analysis.
+
+The verified operation map is in
+[`coffea_backend/ATOMIC_OPERATIONS.md`](coffea_backend/ATOMIC_OPERATIONS.md).
+A small source-grounded SFT seed set is in [`sft/`](sft/).

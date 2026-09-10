@@ -317,3 +317,33 @@ the interactive allocation ends.
   `ee86eaa730325cb30534b1032dfe42c917a37930`.
 - Documented the image digest, installed executable path, and host/container
   responsibility split in `trex_fitter/README.md`.
+
+## 2026-09-10 — Source-audited minimal backend and SFT seed
+
+- Audited the nominal `n` path against TRExFitter v1.10.0 source, especially
+  `NtupleReader::GetHistogram`, `FullSelection`, `FullWeight`, flow folding,
+  `SampleHist::FixEmptyBins`, and ROOT histogram writing.
+- Kept the backend deliberately Hyy-specific instead of expanding toward the
+  full TRExFitter configuration language.
+- Added a Pydantic-backed static compatibility verifier that does not open ROOT
+  inputs or invoke TRExFitter. It validates typed Job/Region/Sample basics,
+  fixed binning, safe expression syntax, required MC weights, unique names,
+  and the explicit feature boundary.
+- The Hyy config passes with zero errors. Its 48 warnings identify presentation
+  settings and Fit/NormFactor blocks that nominal histogramming does not use.
+- Corrected two source-audit discrepancies: exact v1.10 empty-bin error
+  handling and ROOT histogram/x-axis titles. Strengthened differential checks
+  to include those titles.
+- Expanded the unit suite from 10 to 18 tests; all pass under NERSC Python
+  3.11 with the pinned Coffea environment.
+- Completed a full 26-file/41.5-million-event validation on Slurm job
+  `58151768`. All 126 ROOT histograms match the native TRExFitter baseline,
+  with maximum relative content and variance differences of approximately
+  `3.25e-15` and `3.57e-15`.
+- Measured 1:36.19 end-to-end with a cold 10.79 GiB node-local stage and
+  1:17.06 with the stage reused, versus 32:06.06 for the native baseline.
+- Added a source-referenced atomic-operation map and eight hand-reviewed SFT
+  seed examples covering typical analyst actions and explicit unsupported
+  cases. These are examples for review, not yet a production training corpus.
+- Stored all generated output and the detailed performance report under the
+  ignored `artifacts/trex_fitter/coffea-source-audit-20260910/` directory.

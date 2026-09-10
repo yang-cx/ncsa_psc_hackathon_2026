@@ -19,7 +19,11 @@ class Difference:
     max_content_relative: float
     max_variance_absolute: float
     max_variance_relative: float
+    class_equal: bool
     edges_equal: bool
+    title_equal: bool
+    x_axis_title_equal: bool
+    y_axis_title_equal: bool
     within_tolerance: bool
 
 
@@ -69,6 +73,16 @@ def compare_outputs(
                 edges_equal = np.array_equal(
                     expected_hist.axis().edges(), actual_hist.axis().edges()
                 )
+                title_equal = expected_hist.title == actual_hist.title
+                x_axis_title_equal = (
+                    expected_hist.axis().member("fTitle")
+                    == actual_hist.axis().member("fTitle")
+                )
+                y_axis_title_equal = (
+                    expected_hist.member("fYaxis").member("fTitle")
+                    == actual_hist.member("fYaxis").member("fTitle")
+                )
+                class_equal = expected_hist.classname == actual_hist.classname
                 values_close = np.allclose(
                     expected_values, actual_values, rtol=rtol, atol=atol, equal_nan=True
                 )
@@ -95,8 +109,20 @@ def compare_outputs(
                         max_variance_relative=_relative(
                             expected_variances, actual_variances
                         ),
+                        class_equal=class_equal,
                         edges_equal=edges_equal,
-                        within_tolerance=edges_equal and values_close and variances_close,
+                        title_equal=title_equal,
+                        x_axis_title_equal=x_axis_title_equal,
+                        y_axis_title_equal=y_axis_title_equal,
+                        within_tolerance=(
+                            class_equal
+                            and edges_equal
+                            and title_equal
+                            and x_axis_title_equal
+                            and y_axis_title_equal
+                            and values_close
+                            and variances_close
+                        ),
                     )
                 )
     return differences

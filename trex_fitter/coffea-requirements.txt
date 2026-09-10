@@ -1,3 +1,4 @@
 # Direct dependencies for the Coffea implementation of `trex-fitter n`.
 coffea[dask]==2025.7.0
 atlas-schema==0.5.0
+pydantic==2.11.7
