@@ -426,3 +426,20 @@ the interactive allocation ends.
   ROOT input files (trees and required branches); report saved under ignored
   `artifacts/trex_fitter/verifier-input-check.json`. No histogram filling or
   native fit was run for these checks.
+
+## Maintainability cleanup during full-chain run
+
+- Moved reusable config syntax to `trex_fitter/config_format.py`; the backend's
+  old parser imports remain re-exported. Static schema and semantic checks now
+  depend directly on shared syntax rather than on the Coffea config module.
+- Moved implementations from scripts into `runtime.py`, `evaluate.py`, and
+  `mock.py`, retaining old command paths as compatibility wrappers. Runner
+  imports the runtime package directly. Added the package initializer.
+- Audited script callers: legacy preflight and capability CLIs overlap with
+  the unified verifier but have distinct contracts; parallel native execution,
+  input fetching, and the mock still have uses. Retained these interfaces and
+  documented ownership and preferred commands in `trex_fitter/STRUCTURE.md`.
+- 62 tests pass, including legacy import identity and equivalent JSON results
+  from module and script evaluation commands. No physics behavior was changed.
+- Full Coffea-to-native chain is running separately under Slurm job 58167318;
+  artifacts are isolated in `artifacts/trex_fitter/full-chain-58167318/`.

@@ -5,7 +5,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from .coffea_backend.config import _without_comment, _unquote, split_top_level
+from .config_format import _without_comment, _unquote, split_top_level
 
 
 @lru_cache(maxsize=2)

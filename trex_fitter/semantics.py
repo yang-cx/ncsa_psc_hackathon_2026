@@ -6,7 +6,7 @@ No file access beyond the caller's already-parsed configuration.
 import math
 from collections import Counter
 
-from .coffea_backend.config import _unquote, split_top_level
+from .config_format import _unquote, split_top_level
 
 
 def items(block, key, default=""):

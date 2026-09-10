@@ -1,5 +1,8 @@
 # TRExFitter runner
 
+See [STRUCTURE.md](STRUCTURE.md) for module ownership, preferred package
+commands, and retained legacy entry points.
+
 `runner.py` runs the example analysis configs with the pinned StatAnalysis
 container. For configs that read ntuples, it can alternatively use Coffea for
 the expensive histogramming (`n`) action and pass the resulting ROOT

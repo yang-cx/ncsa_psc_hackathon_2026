@@ -24,9 +24,9 @@ PROJECT_DIR = TREX_DIR.parent
 EXAMPLE_DIR = PROJECT_DIR / "data" / "configs" / "examples"
 SAMPLES_DIR = PROJECT_DIR / "data" / "samples"
 
-sys.path.insert(0, str(PROJECT_DIR))
-sys.path.insert(0, str(TREX_DIR / "scripts"))
-import trex as podman_trex  # noqa: E402
+if __package__ in (None, ""):
+    sys.path.insert(0, str(PROJECT_DIR))
+from trex_fitter import runtime as podman_trex  # noqa: E402
 
 # trex.py is also usable standalone from trex_fitter/, while this runner mounts
 # the repository root so configs, inputs, and ignored artifacts share /workdir.

@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from .coffea_backend.config import ConfigError, _Block, _parse_blocks, _unquote, split_top_level
+from .config_format import ConfigError, _Block, _parse_blocks, _unquote, split_top_level
 from .schema import load_schema, matches_schema
 
 
