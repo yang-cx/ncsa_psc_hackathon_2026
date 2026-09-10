@@ -13,6 +13,37 @@ blocks rather than silently producing incomplete histograms.
 
 ## Environment
 
+### Pinned TRExFitter container
+
+The runner uses Podman-HPC with the immutable StatAnalysis 0.8.2 image:
+
+```text
+gitlab-registry.cern.ch/atlas/statanalysis@sha256:36a8c06ae90401e3629830c8ffe3b9fcf0b2a1841b28f59e4ecfa49c243051e1
+```
+
+The exact digest was inspected on NERSC on 2026-09-10 and contains:
+
+- TRExFitter v1.10.0;
+- ROOT v6.40.04;
+- Python 3.10.6;
+- xRooFit `v0.0.4-22-g5eb77d8`.
+
+The container's `trex-fitter` executable is installed at:
+
+```text
+/usr/StatAnalysis/0.8.2/InstallArea/x86_64-el9-gcc14-opt/bin/trex-fitter
+```
+
+The image reference is defined in `trex_fitter/scripts/trex.py`. The traditional
+backend runs `n`, `w`, `f`, and `s` in this container. The Coffea backend runs
+only the replacement `n` implementation in the host-side Python environment;
+the unmodified container still runs requested `w`, `f`, and `s` actions.
+The corresponding TRExFitter documentation release is the `v1.10.0` tag of
+`TRExStats/TRExFitter-Documentation` (commit
+`ee86eaa730325cb30534b1032dfe42c917a37930`).
+
+### Coffea environment
+
 On a NERSC compute node, create an environment on node-local storage for a
 one-off run (or use a persistent venv under `$PSCRATCH`):
 

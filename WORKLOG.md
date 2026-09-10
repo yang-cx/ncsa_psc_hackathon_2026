@@ -306,3 +306,14 @@ the interactive allocation ends.
 - Removed the untracked `data/samples.local-inputs-20260908/` safety backup at
   the user's request, reclaiming approximately 11 GiB.
 - Kept the canonical `data/samples` Git submodule and its Hyy inputs unchanged.
+
+## 2026-09-10 — Container version verification
+
+- Queried the repository's exact pinned StatAnalysis image by immutable digest.
+- Confirmed StatAnalysis 0.8.2, TRExFitter v1.10.0, ROOT v6.40.04, container
+  Python 3.10.6, and xRooFit `v0.0.4-22-g5eb77d8`.
+- Checked out the matching `v1.10.0` release tag in the external
+  `TRExFitter-Documentation` clone at commit
+  `ee86eaa730325cb30534b1032dfe42c917a37930`.
+- Documented the image digest, installed executable path, and host/container
+  responsibility split in `trex_fitter/README.md`.
