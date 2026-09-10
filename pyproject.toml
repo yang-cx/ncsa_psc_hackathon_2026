@@ -1,0 +1,23 @@
+[project]
+name = "ncsa-psc-hackathon-2026"
+version = "0.1.0"
+description = "Host-side tools for the TRExFitter Hyy analysis"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "awkward>=2.8,<3",
+  "numpy>=1.26,<3",
+  "pydantic==2.11.7",
+]
+
+[project.optional-dependencies]
+coffea = [
+  "coffea==2025.7.0",
+  "hist>=2.8,<3",
+  "uproot>=5.6,<6",
+]
+atlas-schema = [
+  "atlas-schema==0.5.0",
+]
+
+[tool.uv]
+package = false

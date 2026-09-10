@@ -347,3 +347,20 @@ the interactive allocation ends.
   cases. These are examples for review, not yet a production training corpus.
 - Stored all generated output and the detailed performance report under the
   ignored `artifacts/trex_fitter/coffea-source-audit-20260910/` directory.
+
+## 2026-09-10 — uv environment management
+
+- Adopted `uv` as the single source of truth for host-side Python dependencies.
+- Added a root `pyproject.toml`, Python 3.11 selector, and committed `uv.lock`;
+  removed the older hand-maintained Coffea requirements file.
+- Kept the default environment limited to the static verifier's Pydantic,
+  NumPy, and Awkward dependencies. Coffea and atlas-schema are separate optional
+  extras, while TRExFitter and ROOT remain exclusively in the container.
+- Generated the lock with NERSC Python 3.11.7 and uv 0.8.0 on Slurm job
+  `58164000`.
+- Verified `uv sync --locked` and the Hyy static verifier with the default
+  environment. It occupies approximately 82 MiB on the tested node.
+- Verified the full `coffea` plus `atlas-schema` extras and all 19 tests. The
+  complete environment occupies approximately 815 MiB; its size is primarily
+  Coffea's scientific and distributed-I/O dependency graph, not ROOT or ML
+  frameworks.

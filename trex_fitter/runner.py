@@ -302,9 +302,9 @@ def main() -> None:
             from coffea_backend import run_histogramming
         except ImportError as exc:
             parser.error(
-                "Coffea dependencies are unavailable. Install "
-                "trex_fitter/coffea-requirements.txt in the active environment "
-                f"({exc})"
+                "Coffea dependencies are unavailable. Run "
+                "uv sync --extra coffea (and optionally --extra atlas-schema), "
+                f"then use uv run with the same extras ({exc})"
             )
         summary = run_histogramming(
             path,

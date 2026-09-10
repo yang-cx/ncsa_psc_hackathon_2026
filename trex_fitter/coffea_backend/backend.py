@@ -45,8 +45,8 @@ def _schema(name: str):
             from atlas_schema.schema import NtupleSchema
         except ImportError as exc:
             raise RuntimeError(
-                "--coffea-schema atlas requires atlas-schema; install "
-                "trex_fitter/coffea-requirements.txt"
+                "--coffea-schema atlas requires atlas-schema; run "
+                "uv sync --extra coffea --extra atlas-schema"
             ) from exc
         return NtupleSchema
     raise ValueError(f"Unknown Coffea schema {name!r}")

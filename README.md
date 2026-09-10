@@ -20,6 +20,29 @@ For an existing clone, initialize the dependency:
 git submodule update --init --recursive
 ```
 
+## Host-side Python
+
+Host-side analysis tools use `uv`; TRExFitter and ROOT remain in the pinned
+container. For static config verification:
+
+```bash
+module load python
+uv sync --locked
+uv run --locked python -m trex_fitter.coffea_backend.verify \
+  data/configs/examples/hyy.config
+```
+
+On a compute node, install and use the optional Coffea backend with:
+
+```bash
+uv sync --locked --extra coffea
+uv run --locked --extra coffea python trex_fitter/runner.py \
+  data/configs/examples/hyy.config --backend coffea --actions n
+```
+
+Add `--extra atlas-schema` to both commands only when that optional schema is
+needed.
+
 `bash training/bootstrap_verl.sh` remains available when only the training
 dependency needs to be initialized. Download the reference training Parquet
 files directly from Hugging Face when needed:

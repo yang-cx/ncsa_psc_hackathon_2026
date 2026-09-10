@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tomllib
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -237,6 +238,19 @@ class SftSeedTests(unittest.TestCase):
             )
             self.assertTrue(metadata["source_refs"])
         self.assertEqual(len(identifiers), len(set(identifiers)))
+
+
+class EnvironmentTests(unittest.TestCase):
+    def test_uv_dependencies_keep_heavy_tools_optional(self):
+        project = tomllib.loads((REPOSITORY / "pyproject.toml").read_text())
+        dependencies = " ".join(project["project"]["dependencies"])
+        extras = project["project"]["optional-dependencies"]
+        self.assertIn("pydantic", dependencies)
+        self.assertNotIn("coffea", dependencies)
+        self.assertTrue(any(item.startswith("coffea==") for item in extras["coffea"]))
+        self.assertTrue(
+            any(item.startswith("atlas-schema==") for item in extras["atlas-schema"])
+        )
 
 
 if __name__ == "__main__":

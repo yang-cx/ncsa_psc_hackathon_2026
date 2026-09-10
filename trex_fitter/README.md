@@ -42,28 +42,45 @@ The corresponding TRExFitter documentation release is the `v1.10.0` tag of
 `TRExStats/TRExFitter-Documentation` (commit
 `ee86eaa730325cb30534b1032dfe42c917a37930`).
 
-### Coffea environment
+### Host-side Python environment
 
-On a NERSC compute node, create an environment on node-local storage for a
-one-off run (or use a persistent venv under `$PSCRATCH`):
+Host-side dependencies are managed by `uv` using the repository's
+`pyproject.toml` and committed `uv.lock`. Load the NERSC Python module first;
+`.python-version` selects the tested Python 3.11 series.
+
+The default environment is intentionally small and supports static config
+verification:
 
 ```bash
-module load python/3.11-24.1.0
-python -m venv /tmp/trex-coffea
-/tmp/trex-coffea/bin/python -m pip install -r trex_fitter/coffea-requirements.txt
+module load python
+uv sync --locked
+uv run --locked python -m trex_fitter.coffea_backend.verify \
+  data/configs/examples/hyy.config
 ```
 
-The direct dependencies are pinned in `coffea-requirements.txt`. The default
-`base` schema exposes the original branch names exactly as TREx expressions
-spell them. `--coffea-schema atlas` enables `atlas-schema` collection grouping;
-the expression resolver understands both layouts.
+Install the optional Coffea histogramming stack on a compute node with:
+
+```bash
+uv sync --locked --extra coffea
+```
+
+Add `--extra atlas-schema` to both `uv sync` and `uv run` to enable the
+optional atlas-schema collection layout. The default `base` schema exposes the
+original branch names exactly as TREx expressions spell them. The expression
+resolver understands both layouts. TRExFitter and ROOT remain in the pinned
+StatAnalysis container and are not installed by `uv`.
+
+On the tested NERSC Python 3.11 environment, the default verifier environment
+occupies about 82 MiB. The complete Coffea plus atlas-schema environment is
+about 815 MiB because Coffea brings the broader Scikit-HEP and distributed-I/O
+stack. Neither environment includes ROOT, CUDA, or machine-learning frameworks.
 
 ## Run
 
 Run only the Coffea replacement for `trex-fitter n`:
 
 ```bash
-/tmp/trex-coffea/bin/python trex_fitter/runner.py \
+uv run --locked --extra coffea python trex_fitter/runner.py \
   data/configs/examples/hyy.config \
   --backend coffea --actions n --coffea-workers 8 \
   --coffea-stage-dir /tmp/trex-hyy-$SLURM_JOB_ID
@@ -74,7 +91,7 @@ nominal, and `_regBin` objects that the later TREx actions expect. Running all
 stages uses Coffea only for `n`:
 
 ```bash
-/tmp/trex-coffea/bin/python trex_fitter/runner.py \
+uv run --locked --extra coffea python trex_fitter/runner.py \
   data/configs/examples/hyy.config --backend coffea \
   --coffea-workers 8 \
   --coffea-stage-dir /tmp/trex-hyy-$SLURM_JOB_ID \
@@ -95,7 +112,7 @@ directory are reused.
 Compare a completed candidate against a TRExFitter reference:
 
 ```bash
-/tmp/trex-coffea/bin/python -m trex_fitter.coffea_backend.compare \
+uv run --locked --extra coffea python -m trex_fitter.coffea_backend.compare \
   artifacts/trex_fitter/baseline-20260908/output/hyy \
   artifacts/trex_fitter/coffea-full/output/hyy \
   --json artifacts/trex_fitter/coffea-full/comparison.json
@@ -110,7 +127,7 @@ Check whether a config fits the supported nominal-NTUP subset without opening
 ROOT files or starting TRExFitter:
 
 ```bash
-/tmp/trex-coffea/bin/python -m trex_fitter.coffea_backend.verify \
+uv run --locked python -m trex_fitter.coffea_backend.verify \
   data/configs/examples/hyy.config
 ```
 
