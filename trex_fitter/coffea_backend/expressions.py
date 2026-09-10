@@ -112,6 +112,15 @@ class Expression:
                     )
                 if child.keywords:
                     raise ExpressionError("Keyword arguments are not supported")
+                arity = 2 if child.func.id in {"atan2", "pow", "min", "max"} else 1
+                if len(child.args) != arity:
+                    raise ExpressionError(f"{child.func.id} requires {arity} argument(s)")
+            if isinstance(child, ast.Subscript):
+                if not (isinstance(child.slice, ast.Constant)
+                        and type(child.slice.value) is int and child.slice.value >= 0):
+                    raise ExpressionError("Only non-negative constant integer collection indices are supported")
+            if isinstance(child, ast.Constant) and type(child.value) not in {int, float, bool}:
+                raise ExpressionError("Only numeric and Boolean constants are supported")
 
     @staticmethod
     def resolve_field(events: Any, name: str) -> Any:
@@ -158,7 +167,20 @@ class Expression:
         if isinstance(node, ast.BoolOp):
             values = [self._evaluate(value, events) for value in node.values]
             function = np.logical_and if isinstance(node.op, ast.And) else np.logical_or
-            return reduce(function, values)
+            # Three-valued logic: a known true operand determines OR, and a
+            # known false operand determines AND even if another is missing.
+            def combine(left, right):
+                if np.isscalar(left) and np.isscalar(right):
+                    return function(left, right)
+                missing_left = False if np.isscalar(left) else ak.is_none(left, axis=-1)
+                missing_right = False if np.isscalar(right) else ak.is_none(right, axis=-1)
+                fill = isinstance(node.op, ast.And)
+                left = left if np.isscalar(left) else ak.fill_none(left, fill)
+                right = right if np.isscalar(right) else ak.fill_none(right, fill)
+                result = function(left, right)
+                unknown = (missing_left | missing_right) & (result if fill else ~result)
+                return ak.mask(result, ~unknown)
+            return reduce(combine, values)
         if isinstance(node, ast.UnaryOp):
             value = self._evaluate(node.operand, events)
             if isinstance(node.op, ast.Not):

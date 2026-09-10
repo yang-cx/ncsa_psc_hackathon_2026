@@ -144,6 +144,24 @@ report. It reports errors rather than warnings for unsupported operations. It
 implements the project's source-grounded basic v1.10 profile, not every
 advanced TRExFitter option and not the physics intent of an analysis.
 
+Allowed setting names and declared types come from the bundled native
+v1.10.0 schemas in `schemas/v1.10.0/`, copied from source commit
+`52e62c30a1faf1ca9fdfe0db74160bb9e00e86e9`. Boolean values, enum choices,
+numeric values, and tuples are checked even for presentation and fit settings.
+Additional cross-block semantic checks remain limited to the basic analysis.
+The Coffea capability boundary is unchanged by accepting a native setting.
+
+The evaluation entry point delegates native execution to the runner and emits
+JSON, including verification, exit status, timeout status, log location, and
+significance when available. A fast mock smoke check is:
+
+```bash
+uv run --locked python trex_fitter/scripts/evaluate_config.py \
+  data/configs/examples/hyy.config --mock
+```
+
+Mock significance is a deterministic test value, not a physics result.
+
 Run the automated tests with pytest's structured, colored terminal output:
 
 ```bash

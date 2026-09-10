@@ -384,3 +384,23 @@ the interactive allocation ends.
   login host; the check streamed the StatAnalysis version banner immediately.
 - Documented that the pinned 8 GiB image is cached locally and that
   atlas-schema is optional and non-default for these legacy flat ntuples.
+
+## Review fixes — native setting types, expressions, and evaluation
+
+- Replaced the handwritten setting allowlist with bundled TRExFitter v1.10.0
+  schema snapshots from commit `52e62c30a1faf1ca9fdfe0db74160bb9e00e86e9`.
+  Check each supplied setting against its native type/enum/tuple declaration.
+  Semantic checks still cover the basic analysis; Coffea support remains a
+  separate granular result in the unified verifier.
+- Reject unsupported collection indices, function argument counts, and
+  nonnumeric constants when expressions are parsed, before input access.
+- Corrected Boolean operations with missing collection elements: known true
+  OR and known false AND operands now determine the result. Unknown final
+  selections remain rejected.
+- Repaired evaluate_config.py by delegating to the existing runner and mock
+  script. It emits JSON, captures logs, applies a subprocess timeout, and reads
+  significance only from this invocation's output.
+- Verification: 40 tests passed, including the new malformed-config,
+  expression, missing-value, and mock-evaluation regressions. No full native
+  fit was rerun. The staging collision issue was explained but not changed in
+  this review-fix scope.

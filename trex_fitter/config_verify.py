@@ -2,8 +2,8 @@
 
 The verifier covers the complete basic analysis model used by ``hyy.config``:
 Job, Fit, Region, Sample, and NormFactor blocks, including cross-references.
-It does not open ROOT files, start a container, or decide whether an optional
-histogramming backend supports the config.
+It checks native setting types against pinned v1.10.0 schemas and reports
+Coffea compatibility without opening ROOT files or starting a container.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .coffea_backend.config import ConfigError, _Block, _parse_blocks, _unquote, split_top_level
+from .schema import load_schema, matches_schema
 
 
 class ConfigIssue(BaseModel):
@@ -66,9 +67,9 @@ class _Job(BaseModel):
 class _Fit(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    fit_type: Literal["BONLY", "SPLUSB"]
+    fit_type: Literal["BONLY", "SPLUSB", "UNFOLDING", "EFT"]
     fit_region: Literal["CRONLY", "CRSR"]
-    poi_asimov: float | None = None
+    poi_asimov: str | None = None
 
 
 class _Region(BaseModel):
@@ -113,25 +114,7 @@ class _NormFactor(BaseModel):
         return self
 
 
-# Source-grounded basic profile for TRExFitter v1.10.0. These are analysis
-# settings, not Coffea capabilities. Extend this profile deliberately when a
-# new atomic config operation is added to the project.
-_SETTINGS = {
-    "Job": {
-        "Label", "CmeLabel", "POI", "ReadFrom", "NtuplePaths", "NtupleName",
-        "HistoPath", "LumiLabel", "Lumi", "DebugLevel", "PlotOptions",
-        "SplitHistoFiles", "SystControlPlots", "SystCategoryTables",
-        "CorrelationThreshold", "MCstatThreshold",
-    },
-    "Fit": {"FitType", "FitRegion", "POIAsimov", "UseMinos", "FitBlind", "doLHscan"},
-    "Region": {"Type", "Variable", "VariableTitle", "Selection", "Label", "ShortLabel", "HistoName"},
-    "Sample": {
-        "Type", "Title", "FillColor", "LineColor", "NtuplePathSuff",
-        "NtupleFiles", "NtupleFile", "MCweight", "Selection", "UseMCstat",
-        "HistoFile", "HistoName", "NormFactor", "Regions",
-    },
-    "NormFactor": {"Samples", "Regions", "Title", "Nominal", "Min", "Max"},
-}
+_SEMANTIC_BLOCKS = ("Job", "Fit", "Region", "Sample", "NormFactor")
 
 
 def _issue(block: _Block, code: str, message: str, setting: str | None = None) -> ConfigIssue:
@@ -176,7 +159,8 @@ def _verify_analysis_config(path: Path | str) -> _AnalysisReport:
 
     counts = dict(Counter(block.kind for block in blocks))
     errors: list[ConfigIssue] = []
-    by_kind = {kind: [block for block in blocks if block.kind == kind] for kind in _SETTINGS}
+    schema = load_schema(any(block.kind == "MultiFit" for block in blocks))
+    by_kind = {kind: [block for block in blocks if block.kind == kind] for kind in _SEMANTIC_BLOCKS}
 
     if len(by_kind["Job"]) != 1:
         errors.append(ConfigIssue(code="job_count", message=f"expected exactly one Job block, found {len(by_kind['Job'])}"))
@@ -187,12 +171,15 @@ def _verify_analysis_config(path: Path | str) -> _AnalysisReport:
             errors.append(ConfigIssue(code=f"missing_{kind.lower()}", message=f"no {kind} blocks found"))
 
     for block in blocks:
-        if block.kind not in _SETTINGS:
-            errors.append(_issue(block, "unsupported_block", f"{block.kind} is outside the project's basic analysis profile"))
+        if block.kind not in schema:
+            errors.append(_issue(block, "unsupported_block", f"{block.kind} is absent from the TRExFitter v1.10.0 schema"))
             continue
-        for setting in block.values:
-            if setting not in _SETTINGS[block.kind]:
-                errors.append(_issue(block, "unknown_setting", f"{setting} is not valid in a basic {block.kind} block", setting))
+        for setting, raw in block.values.items():
+            specification = schema[block.kind].get(setting)
+            if specification is None:
+                errors.append(_issue(block, "unknown_setting", f"{setting} is not in the v1.10.0 {block.kind} schema", setting))
+            elif not matches_schema(raw, specification):
+                errors.append(_issue(block, "invalid_value", f"{setting}: expected {specification}, got {raw!r}", setting))
 
     job_mode: str | None = None
     if len(by_kind["Job"]) == 1:
