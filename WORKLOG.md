@@ -368,13 +368,13 @@ the interactive allocation ends.
 
 ## 2026-09-10 — Runner and verifier UX cleanup
 
-- Separated whole-analysis config validation from Coffea backend capability
-  checks. The fast Pydantic verifier now covers every basic block in the Hyy
-  analysis (Job, Fit, Region, Sample, and NormFactor), including references,
-  and reports errors rather than histogramming-related warnings.
-- Kept the Coffea compatibility gate separate and removed 48 noisy messages
-  for settings and blocks that are correctly consumed by later TRExFitter
-  stages.
+- The single public Pydantic verifier now checks both the whole basic Hyy
+  analysis (Job, Fit, Region, Sample, and NormFactor, including references)
+  and Coffea backend compatibility. Its report retains granular
+  `analysis_valid` and `coffea_compatible` decisions.
+- Kept the two checks internally distinct, removed 48 noisy messages for
+  settings and blocks correctly consumed by later TRExFitter stages, and made
+  Coffea execution enforce the combined verdict before opening input files.
 - Added pytest as a uv development dependency and documented the colored test
   command.
 - Made container output stream as it is produced, disabled the runner's costly

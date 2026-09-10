@@ -129,25 +129,20 @@ titles, and numerically consistent bin contents and variances.
 
 ## Fast analysis config verification
 
-Validate the complete basic analysis structure used by `hyy.config`—Job, Fit,
-Region, Sample, and NormFactor blocks plus their cross-references—without
-opening ROOT files or starting TRExFitter:
+Validate both the complete basic analysis structure used by `hyy.config`—Job,
+Fit, Region, Sample, and NormFactor blocks plus their cross-references—and
+Coffea `n` compatibility without opening ROOT files or starting TRExFitter:
 
 ```bash
 uv run --locked python -m trex_fitter.config_verify \
   data/configs/examples/hyy.config
 ```
 
-The Pydantic-backed verifier prints a short `VALID`/`INVALID` result and errors
-only; it does not emit backend-related warnings. It implements the project's
-source-grounded basic v1.10 profile, not every advanced TRExFitter option and
-not the physics intent of an analysis. Check the experimental Coffea `n`
-compatibility separately when needed:
-
-```bash
-uv run --locked python -m trex_fitter.coffea_backend.verify \
-  data/configs/examples/hyy.config
-```
+The single Pydantic-backed verifier returns one overall `valid` value plus
+granular `analysis_valid` and `coffea_compatible` values in its Python/JSON
+report. It reports errors rather than warnings for unsupported operations. It
+implements the project's source-grounded basic v1.10 profile, not every
+advanced TRExFitter option and not the physics intent of an analysis.
 
 Run the automated tests with pytest's structured, colored terminal output:
 

@@ -12,7 +12,7 @@ import argparse
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -28,16 +28,30 @@ class ConfigIssue(BaseModel):
     line: int | None = None
 
 
-class ConfigReport(BaseModel):
-    verifier: str = "trex-basic-analysis-v1.10"
+class _AnalysisReport(BaseModel):
     config: str
     valid: bool
     blocks: dict[str, int]
     errors: list[ConfigIssue]
 
+
+class VerificationReport(BaseModel):
+    """One verdict with granular analysis and Coffea compatibility results."""
+
+    verifier: str = "trex-basic-analysis-and-coffea-v1.10"
+    config: str
+    valid: bool
+    analysis_valid: bool
+    coffea_compatible: bool
+    blocks: dict[str, int]
+    errors: list[ConfigIssue]
+    coffea_issues: list[dict[str, Any]]
+
     def raise_for_errors(self) -> None:
-        if self.errors:
-            raise ConfigError("; ".join(issue.message for issue in self.errors))
+        messages = [issue.message for issue in self.errors]
+        messages.extend(str(issue["message"]) for issue in self.coffea_issues)
+        if messages:
+            raise ConfigError("; ".join(messages))
 
 
 class _Job(BaseModel):
@@ -149,13 +163,13 @@ def _model_errors(block: _Block, error: ValidationError) -> list[ConfigIssue]:
     ]
 
 
-def verify_config(path: Path | str) -> ConfigReport:
-    """Validate the project's complete basic analysis profile in milliseconds."""
+def _verify_analysis_config(path: Path | str) -> _AnalysisReport:
+    """Validate the project's complete basic analysis profile."""
     path = Path(path).resolve()
     try:
         blocks = _parse_blocks(path)
     except (ConfigError, OSError) as error:
-        return ConfigReport(
+        return _AnalysisReport(
             config=str(path), valid=False, blocks={},
             errors=[ConfigIssue(code="parse_error", message=str(error))],
         )
@@ -271,7 +285,24 @@ def verify_config(path: Path | str) -> ConfigReport:
         if poi and poi not in declared:
             errors.append(_issue(by_kind["Job"][0], "unknown_poi", f"POI {poi!r} does not name a NormFactor block", "POI"))
 
-    return ConfigReport(config=str(path), valid=not errors, blocks=counts, errors=errors)
+    return _AnalysisReport(config=str(path), valid=not errors, blocks=counts, errors=errors)
+
+
+def verify_config(path: Path | str) -> VerificationReport:
+    """Run both basic analysis validation and Coffea compatibility checking."""
+    analysis = _verify_analysis_config(path)
+    from .coffea_backend.verify import verify_config as _verify_coffea_config
+
+    coffea = _verify_coffea_config(path)
+    return VerificationReport(
+        config=analysis.config,
+        valid=analysis.valid and coffea.compatible,
+        analysis_valid=analysis.valid,
+        coffea_compatible=coffea.compatible,
+        blocks=analysis.blocks,
+        errors=analysis.errors,
+        coffea_issues=[issue.model_dump() for issue in coffea.issues],
+    )
 
 
 def main() -> None:
@@ -280,12 +311,17 @@ def main() -> None:
     parser.add_argument("--json", type=Path, dest="json_path", help="also write the full machine-readable report")
     args = parser.parse_args()
     report = verify_config(args.config)
-    status = "VALID" if report.valid else "INVALID"
+    status = "VALID" if report.analysis_valid else "INVALID"
     counts = ", ".join(f"{kind}={count}" for kind, count in sorted(report.blocks.items()))
     print(f"{status}: {args.config} ({counts})")
     for issue in report.errors:
         where = f"line {issue.line}: " if issue.line else ""
         print(f"  ERROR [{issue.code}] {where}{issue.message}")
+    coffea_status = "COMPATIBLE" if report.coffea_compatible else "INCOMPATIBLE"
+    print(f"{coffea_status}: Coffea action n ({len(report.coffea_issues)} issue(s))")
+    for issue in report.coffea_issues:
+        where = f"line {issue['line']}: " if issue["line"] else ""
+        print(f"  {issue['severity'].upper()} [{issue['code']}] {where}{issue['message']}")
     if args.json_path:
         args.json_path.parent.mkdir(parents=True, exist_ok=True)
         args.json_path.write_text(json.dumps(report.model_dump(), indent=2) + "\n")

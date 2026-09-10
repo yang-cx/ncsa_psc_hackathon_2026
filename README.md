@@ -23,7 +23,8 @@ git submodule update --init --recursive
 ## Host-side Python
 
 Host-side analysis tools use `uv`; TRExFitter and ROOT remain in the pinned
-container. For static config verification:
+container. The standard verifier checks both the basic analysis structure and
+Coffea `n` compatibility:
 
 ```bash
 module load python

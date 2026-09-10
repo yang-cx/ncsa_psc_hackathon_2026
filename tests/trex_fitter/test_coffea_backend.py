@@ -17,7 +17,7 @@ from trex_fitter.coffea_backend.config import parse_config, split_top_level
 from trex_fitter.coffea_backend.expressions import Expression, boolean_mask
 from trex_fitter.coffea_backend.verify import verify_config
 from trex_fitter.coffea_backend.writer import _fold_flow, _make_histogram, _sanitize
-from trex_fitter.config_verify import verify_config as verify_analysis_config
+from trex_fitter.config_verify import verify_config as verify_full_config
 from trex_fitter import runner
 
 
@@ -26,8 +26,11 @@ REPOSITORY = Path(__file__).resolve().parents[2]
 
 class ConfigTests(unittest.TestCase):
     def test_hyy_complete_basic_analysis_is_valid(self):
-        report = verify_analysis_config(REPOSITORY / "data/configs/examples/hyy.config")
+        report = verify_full_config(REPOSITORY / "data/configs/examples/hyy.config")
         self.assertTrue(report.valid, report.errors)
+        self.assertTrue(report.analysis_valid)
+        self.assertTrue(report.coffea_compatible)
+        self.assertEqual(report.coffea_issues, [])
         self.assertEqual(
             report.blocks,
             {"Job": 1, "Fit": 1, "Region": 6, "Sample": 7, "NormFactor": 7},
@@ -45,7 +48,7 @@ class ConfigTests(unittest.TestCase):
                 'NormFactor: "mu"\n  Samples: missing\n  Regions: nowhere\n'
                 '  Nominal: 1\n  Min: 0\n  Max: 2\n'
             )
-            report = verify_analysis_config(path)
+            report = verify_full_config(path)
             self.assertFalse(report.valid)
             self.assertEqual(
                 {issue.code for issue in report.errors},

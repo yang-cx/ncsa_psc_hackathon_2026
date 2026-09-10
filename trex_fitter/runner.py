@@ -24,6 +24,7 @@ PROJECT_DIR = TREX_DIR.parent
 EXAMPLE_DIR = PROJECT_DIR / "data" / "configs" / "examples"
 SAMPLES_DIR = PROJECT_DIR / "data" / "samples"
 
+sys.path.insert(0, str(PROJECT_DIR))
 sys.path.insert(0, str(TREX_DIR / "scripts"))
 import trex as podman_trex  # noqa: E402
 
@@ -317,7 +318,7 @@ def main() -> None:
     if args.backend == "coffea" and "n" in actions:
         output_base = (args.output_dir or PROJECT_DIR).resolve()
         try:
-            from coffea_backend import run_histogramming
+            from trex_fitter.coffea_backend import run_histogramming
         except ImportError as exc:
             parser.error(
                 "Coffea dependencies are unavailable. Run "

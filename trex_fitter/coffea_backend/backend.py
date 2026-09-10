@@ -12,9 +12,9 @@ import coffea
 from coffea import processor
 from coffea.nanoevents import BaseSchema
 
+from ..config_verify import verify_config
 from .config import parse_config, resolve_all_files
 from .processor import TrexNtupleProcessor
-from .verify import verify_config
 from .writer import write_histograms
 
 
