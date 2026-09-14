@@ -1,54 +1,78 @@
-# Native agent tool contract (v1)
+# Qwen coding-agent tool contract (v1)
 
-We use **native Codex and OpenCode tools only**. No MCP server or custom tool
-wrapper is part of the dataset. The canonical source task declares capabilities
-(`read`, `modify`, and `execute`); each harness renderer emits its native tool
-calls and records their native results.
+The model-facing contract is independent of the trajectory-collection harness.
+Codex and OpenCode are samplers, not separate SFT modalities. Their raw event
+streams remain immutable provenance and are normalized into one semantic
+record before training Qwen3.5.
 
-The two renderings are equivalent task solutions, not byte-identical tool
-traces. They share a `logical_task_id`, fixture, expected final state, verifier
-result, and split.
+## Qwen training representation
 
-## Allowed native tools
+Each record contains an OpenAI-style `tools` array and chronological
+`system`, `user`, `assistant`, and `tool` messages. Assistant calls use
+`tool_calls[].function.name` and object-valued `arguments`; tool results carry
+the matching `tool_call_id`. We do not write Qwen XML into JSONL.
 
-| Capability | Codex rendering | OpenCode rendering |
-| --- | --- | --- |
-| Read or search workspace files | `Bash` running bounded commands such as `sed`, `rg`, `head`, or `tail` | `read`; `grep`, `glob`, or `list` where needed |
-| Modify a tracked config | `apply_patch` with a unified diff | `edit`, `write`, or `apply_patch` |
-| Validate, run, or inspect local artifacts | `Bash` | `bash` |
+At tokenization time, pass both `messages` and `tools` to the exact target
+checkpoint's `apply_chat_template`. Qwen3.5 then renders its preferred
+`<tool_call><function=...><parameter=...>` syntax and converts tool-result
+messages to `<tool_response>` content. This keeps source data semantic and
+lets the checkpoint tokenizer own special tokens and template revisions.
 
-For Codex, file reads are deliberately represented as `Bash` calls. Prefer
-line-bounded reads such as `sed -n '1,160p' configs/task.config` and bounded
-searches such as `rg -n 'Region|Sample' configs/task.config`; do not emit an
-unbounded file dump. `apply_patch` is the only file mutation tool in Codex
-records.
+The initial native-agent study uses `enable_thinking=false`. Planning text and
+tool calls are supervised, but proprietary hidden reasoning from a sampling
+model is never treated as a Qwen reasoning trace. A thinking-mode study needs
+separately generated, reviewed Qwen-compatible `reasoning_content`.
 
-For OpenCode, prefer its native `read` tool for file contents, `edit` for an
-exact replacement, `write` only when complete replacement is intended, and
-`apply_patch` for a unified diff. The OpenCode rendering may instead use `bash`
-for local validators and runners.
+## Canonical generic tools
 
-## Sandbox and authoring rules
+Every TRExFitter coding-agent row exposes the same small tool manifest:
 
-- Every command runs in the task's private fixture-derived workspace. The
-  harness configuration fixes the working directory, resource limits, output
-  limit, and maximum timeout.
-- Dataset task environments must disable network access and provide no
-  credentials. The model never supplies a working directory, timeout above the
-  task cap, or environment secrets.
-- Paths must be workspace-relative and restricted to the task's allowlisted
-  files. Patches may change only allowlisted paths.
-- Record observable native tool output verbatim, including exit status and
-  truncated stdout/stderr. Do not synthesize output or expose hidden verifier
-  state.
-- A task advertises only the native tools it needs. A config-repair task
-  normally enables `Bash` and `apply_patch` for Codex, and `read`, `edit` or
-  `apply_patch`, and `bash` for OpenCode.
-- Direct-config rows have no tool manifest (`tools: []`).
+| Tool | Purpose |
+| --- | --- |
+| `shell` | Run a command in the isolated task workspace. |
+| `read_file` | Read a workspace-relative file, optionally with an offset and limit. |
+| `search_files` | Search contents, path globs, or a directory. |
+| `apply_patch` | Apply a bounded patch to an allowlisted workspace file. |
 
-## Renderer requirements
+These names are our versioned application interface; Qwen itself does not
+mandate function names. They are deliberately generic coding operations, not
+TRExFitter APIs. `config_verify` and the TRExFitter runner are ordinary shell
+commands, not model-facing functions. No MCP server, `list_blocks`,
+`search_settings`, `read_config`, or `verify_config` is exposed.
 
-The renderer owns the native tool names, parameter schemas, and tool-result
-serialization. The source task must not contain Codex or OpenCode wrapper
-tokens. Before release, replay each rendering in its target harness against the
-same fixture and require the same verified final config state.
+## Source-harness adapters
+
+The capture exporter records the source harness and translates only the call
+envelope. Observable results are retained from the raw event stream.
+
+| Source event | Canonical Qwen call |
+| --- | --- |
+| Codex `command_execution` | `shell` |
+| Codex `file_change` | `apply_patch` reconstructed from the verified before/after files |
+| OpenCode `bash` | `shell` |
+| OpenCode `read` | `read_file` |
+| OpenCode `glob`, `grep`, or `list` | `search_files` with an explicit mode |
+| OpenCode `edit` or `apply_patch` | `apply_patch` |
+
+At inference, a harness adapter performs the reverse mapping: it parses
+Qwen3.5's output through the checkpoint-supported Qwen tool parser, validates
+the canonical JSON arguments, and invokes the corresponding native harness
+operation. The trained model therefore sees one protocol even when deployed
+behind different harnesses.
+
+## Sandbox and acceptance rules
+
+- Every command runs in a private fixture-derived workspace. Only
+  `analysis.config` may be modified.
+- Agent-visible network, web, MCP, subagent, credential, and external-directory
+  access is disabled. Provider transport and authentication remain outside the
+  task sandbox.
+- Paths are normalized workspace-relative. Commands, reads, outputs, errors,
+  exit codes, and edits are bounded before release.
+- A raw trajectory is eligible only after the agent exits and an external
+  scorer verifies the requested semantic change, unrelated-setting
+  preservation, and required config evidence.
+- Raw source events and their hashes are retained. The export records every
+  normalization, including a reconstructed Codex patch.
+- Train, validation, and test are split by `logical_task_id`, never by sampler
+  or trajectory variant.

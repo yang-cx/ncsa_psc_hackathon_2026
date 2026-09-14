@@ -1,0 +1,436 @@
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+
+PROJECT = Path(__file__).resolve().parents[2]
+DATASET = PROJECT / "data/datasets/hyy-trexfitter-agent-trajectories"
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+RUNNER = load("native_agent_study", PROJECT / "inference/run_native_agent_study.py")
+EXPORT = load("native_sft_export", DATASET / "tools/export_native_sft.py")
+PREFLIGHT = load("qwen_sft_preflight", DATASET / "tools/preflight_qwen_sft.py")
+RECONSTRUCTION = load(
+    "reconstruction_builder", DATASET / "tools/build_reconstruction_tasks.py"
+)
+from trex_fitter.expression_equivalence import (  # noqa: E402
+    contract_values_equivalent,
+    expressions_equivalent,
+)
+
+
+def rows(path):
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def test_native_task_renderings_cover_current_tasks_without_domain_tools():
+    forbidden = {"list_blocks", "search_settings", "read_config", "verify_config"}
+    expected = {"train": 120, "validation": 36, "test": 24}
+    seen_by_split = {}
+    for split, logical_tasks in expected.items():
+        split_rows = rows(DATASET / f"data/native/tasks/{split}.jsonl")
+        assert len(split_rows) == logical_tasks
+        assert len({row["logical_task_id"] for row in split_rows}) == logical_tasks
+        assert {row["modality"] for row in split_rows} == {"coding_agent"}
+        assert all("target_model_family" not in row for row in split_rows)
+        assert all("target_chat_template" not in row for row in split_rows)
+        assert {row["tool_contract"] for row in split_rows} == {"canonical-code-tools/v1"}
+        assert all(row["native_tool_policy"]["custom_tools"] is False for row in split_rows)
+        assert all(not (forbidden & set(json.dumps(row).split())) for row in split_rows)
+        assert not any(name in json.dumps(split_rows) for name in forbidden)
+        seen_by_split[split] = {row["logical_task_id"] for row in split_rows}
+    assert not (seen_by_split["train"] & seen_by_split["validation"])
+    assert not (seen_by_split["train"] & seen_by_split["test"])
+    assert not (seen_by_split["validation"] & seen_by_split["test"])
+
+
+def test_reconstruction_tasks_remove_one_whole_block_and_split_by_identity(tmp_path):
+    tasks = RUNNER.scoreable_tasks(DATASET)
+    reconstruction = [task for task in tasks if task.get("task_type") == "block_reconstruction"]
+    assert len(reconstruction) == 12
+    assert {task["split"] for task in reconstruction} == {"train", "validation"}
+    assert sum(task["split"] == "train" for task in reconstruction) == 8
+    assert sum(task["split"] == "validation" for task in reconstruction) == 4
+    identities = [
+        (task["reconstruction_target"]["block_kind"], task["reconstruction_target"]["block_name"])
+        for task in reconstruction
+    ]
+    assert len(identities) == len(set(identities))
+
+    seed = RECONSTRUCTION.seed_path(DATASET).read_text()
+    seed_path = tmp_path / "seed.config"
+    seed_path.write_text(seed)
+    seed_map = RUNNER.semantic_map(seed_path)
+    for task in reconstruction:
+        before = DATASET / task["state_before"]
+        before_map = RUNNER.semantic_map(before)
+        removed = {key for key in seed_map if key not in before_map}
+        expected = {
+            (item["block"], item["name"], item["setting"])
+            for item in task["change_contract"]
+        }
+        assert removed == expected
+        assert not {key for key in before_map if key not in seed_map}
+
+
+def test_every_reconstruction_gold_state_passes_contract_and_preservation(tmp_path):
+    tasks = [
+        task for task in RUNNER.scoreable_tasks(DATASET)
+        if task.get("task_type") == "block_reconstruction"
+    ]
+    restored = tmp_path / "analysis.config"
+    restored.write_text(RECONSTRUCTION.seed_path(DATASET).read_text())
+    for task in tasks:
+        score = RUNNER.score_task(task, DATASET / task["state_before"], restored)
+        assert score["passed"], (task["task_id"], score["reasons"])
+        assert score["contract_ok"] and score["preservation_ok"] and score["analysis_valid"]
+
+
+def test_reconstruction_native_prompt_describes_missing_block_without_custom_tools():
+    task = next(
+        row for row in rows(DATASET / "data/native/tasks/validation.jsonl")
+        if row["id"] == "hyy-reconstruct-sample-wh"
+    )
+    assert task["task_type"] == "block_reconstruction"
+    assert task["reconstruction_target"]["block_name"] == "WH"
+    assert "missing exactly one complete block" in task["prompt"]
+    assert "inspect sibling blocks" in task["prompt"]
+    assert "read_config" not in task["prompt"]
+
+
+def test_expression_equivalence_reverses_comparison_and_reorders_boolean_terms():
+    assert expressions_equivalent("A > B", "B < A")
+    assert expressions_equivalent("x > 1 && y <= 2", "2 >= y && 1 < x")
+    assert expressions_equivalent("0 < x < 2", "x > 0 && 2 > x")
+    assert not expressions_equivalent("A > B", "B > A")
+    assert contract_values_equivalent(
+        "Variable", '"x + y",15,100,160', '"y+x",15,100.0,160.0'
+    )
+
+
+def test_native_scorer_accepts_equivalent_reconstructed_selection(tmp_path):
+    task = next(
+        task for task in RUNNER.scoreable_tasks(DATASET)
+        if task["task_id"] == "hyy-reconstruct-region-cat-transition"
+    )
+    source = RECONSTRUCTION.seed_path(DATASET).read_text()
+    source = source.replace(
+        "fabs(photon_eta[0])>1.3 && fabs(photon_eta[0])<1.75",
+        "1.3<fabs(photon_eta[0]) && 1.75>fabs(photon_eta[0])",
+    )
+    restored = tmp_path / "analysis.config"
+    restored.write_text(source)
+    score = RUNNER.score_task(task, DATASET / task["state_before"], restored)
+    assert score["passed"], score["reasons"]
+    assert score["equivalence_matches"] == ["Region.cat_transition.Selection"]
+
+
+def test_cli_command_places_codex_global_approval_before_exec(tmp_path):
+    command = RUNNER.cli_command("codex", tmp_path, "prompt", None, "low")
+    assert command[:5] == ["codex", "--ask-for-approval", "never", "exec", "--json"]
+    assert str(tmp_path.resolve()) in command
+    assert 'model_reasoning_effort="low"' in command
+
+
+def test_materialized_workspace_is_an_isolated_git_repository(tmp_path):
+    task = next(row for row in RUNNER.scoreable_tasks(DATASET) if row["split"] == "train")
+    workspace = tmp_path / "task"
+    RUNNER.materialize_workspace(task, DATASET, workspace, "codex")
+    assert (workspace / ".git").is_dir()
+    assert (workspace / "analysis.config").is_file()
+
+
+def test_runner_uses_exact_checked_in_native_prompt():
+    expected = next(
+        row for row in rows(DATASET / "data/native/tasks/validation.jsonl")
+        if row["id"] == "hyy-traj-fit_controls-fit-minos-muh"
+    )
+    actual = RUNNER.native_prompt_for(
+        DATASET, "validation", "hyy-traj-fit_controls-fit-minos-muh"
+    )
+    assert actual == expected["prompt"]
+    assert "bounded reads" in actual
+    assert "--evidence-level S" in actual
+
+
+def test_native_event_gate_requires_successful_exact_python_verifier():
+    codex = [{
+        "type": "item.completed",
+        "item": {
+            "type": "command_execution",
+            "command": "/usr/bin/bash -lc 'python -m trex_fitter.config_verify analysis.config --actions n'",
+            "exit_code": 0,
+        },
+    }]
+    assert RUNNER.observed_agent_validation("codex", codex, check_inputs=False)
+    assert not RUNNER.observed_agent_validation("codex", codex, check_inputs=True)
+    codex[0]["item"]["exit_code"] = 1
+    assert not RUNNER.observed_agent_validation("codex", codex, check_inputs=False)
+    codex[0]["item"]["exit_code"] = 0
+    codex[0]["item"]["command"] = (
+        "/usr/bin/bash -lc 'python -m trex_fitter.config_verify analysis.config --actions n\n"
+        "git diff -- analysis.config'"
+    )
+    assert not RUNNER.observed_agent_validation("codex", codex, check_inputs=False)
+
+    opencode = [{
+        "type": "tool_use",
+        "part": {
+            "tool": "bash",
+            "state": {
+                "status": "completed",
+                "input": {"command": "python3 -m trex_fitter.config_verify ./analysis.config --actions=n --check-inputs"},
+                "metadata": {"exit": 0},
+            },
+        },
+    }]
+    assert RUNNER.observed_agent_validation("opencode", opencode, check_inputs=True)
+
+    verifier_then_edit = [
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "python -m trex_fitter.config_verify analysis.config --actions n",
+                "exit_code": 0,
+            },
+        },
+        {"type": "item.completed", "item": {"type": "file_change", "id": "late-edit"}},
+    ]
+    assert not RUNNER.observed_agent_validation("codex", verifier_then_edit, check_inputs=False)
+
+
+def test_native_scope_gate_rejects_parent_reads_and_allows_workspace_paths(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    allowed = [{
+        "type": "tool_use",
+        "part": {
+            "tool": "read", "state": {"status": "completed", "input": {
+                "filePath": str(workspace / "analysis.config"),
+            }},
+        },
+    }]
+    assert RUNNER.native_scope_violations("opencode", allowed, workspace) == []
+    outside = json.loads(json.dumps(allowed))
+    outside[0]["part"]["state"]["input"]["filePath"] = str(tmp_path / "secret.txt")
+    assert RUNNER.native_scope_violations("opencode", outside, workspace) == [
+        "read referenced a path outside the task workspace"
+    ]
+
+    codex = [{
+        "type": "item.completed",
+        "item": {"type": "command_execution", "command": "sed -n 1,5p ../other.config"},
+    }]
+    assert RUNNER.native_scope_violations("codex", codex, workspace) == [
+        "shell command referenced a path outside the task workspace"
+    ]
+
+
+def test_codex_events_normalize_to_canonical_native_tools(tmp_path):
+    before = tmp_path / "before.config"
+    after = tmp_path / "after.config"
+    before.write_text('Fit: "fit"\n%  UseMinos: mu_H\n')
+    after.write_text('Fit: "fit"\n  UseMinos: mu_H\n')
+    events = [
+        {"type": "item.completed", "item": {"id": "m1", "type": "agent_message", "text": "Inspecting."}},
+        {"type": "item.completed", "item": {"id": "c1", "type": "command_execution", "command": "/bin/bash -lc 'sed -n 1,2p analysis.config'", "aggregated_output": "Fit\n", "exit_code": 0}},
+        {"type": "item.completed", "item": {"id": "p1", "type": "file_change"}},
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "m2",
+                "type": "agent_message",
+                "text": f"Validated {after}:2.",
+            },
+        },
+    ]
+    messages, tools, note = EXPORT.codex_messages(events, before, after)
+    assert tools == {"shell", "apply_patch"}
+    assert [call["function"]["name"] for message in messages for call in message.get("tool_calls", [])] == [
+        "shell", "apply_patch"
+    ]
+    assert messages[-1]["content"] == "Validated analysis.config:2."
+    assert str(tmp_path) not in json.dumps(messages)
+    assert "reconstructed" in note
+
+
+def test_opencode_events_map_to_canonical_qwen_tools_and_remove_absolute_paths(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = workspace / "analysis.config"
+    event = {
+        "type": "tool_use",
+        "part": {
+            "tool": "edit", "callID": "call-1",
+            "state": {
+                "status": "completed",
+                "input": {"filePath": str(config), "oldString": "old", "newString": "new"},
+                "output": f"edited {config}",
+            },
+        },
+    }
+    messages, tools, _ = EXPORT.opencode_messages([event, {"type": "text", "part": {"text": "Done."}}], workspace)
+    assert tools == {"apply_patch"}
+    function = messages[0]["tool_calls"][0]["function"]
+    assert function["name"] == "apply_patch"
+    assert "*** Update File: analysis.config" in function["arguments"]["patch"]
+    assert str(tmp_path) not in json.dumps(messages)
+    assert messages[-1]["content"] == "Done."
+
+
+def test_export_contract_has_one_model_neutral_tool_manifest_without_artifact_dependency():
+    expected = ["shell", "read_file", "search_files", "apply_patch"]
+    tools = [EXPORT.TOOL_SCHEMAS[name] for name in EXPORT.CANONICAL_TOOL_NAMES]
+    assert [tool["function"]["name"] for tool in tools] == expected
+    row = {
+        "uuid": "synthetic-contract-check",
+        "messages": [
+            {"role": "system", "content": "Use the supplied tools."},
+            {"role": "user", "content": "Inspect the config."},
+            {
+                "role": "assistant",
+                "content": "I will inspect it.",
+                "tool_calls": [{
+                    "id": "call-1", "type": "function",
+                    "function": {"name": "read_file", "arguments": {"path": "analysis.config"}},
+                }],
+            },
+            {"role": "tool", "content": "Job: hyy", "tool_call_id": "call-1"},
+            {"role": "assistant", "content": "The config was inspected."},
+        ],
+        "tools": tools,
+        "tool_contract": "canonical-code-tools/v1",
+    }
+    PREFLIGHT.semantic_check(row)
+    assert "target_model_family" not in row
+    assert "assistant_loss_mask" not in row
+
+
+def test_native_export_row_contains_no_model_tokens_or_authored_loss_mask(tmp_path):
+    study = tmp_path / "study"
+    (study / "events").mkdir(parents=True)
+    (study / "initial").mkdir()
+    (study / "work/task-1").mkdir(parents=True)
+    (study / "initial/task-1.config").write_text('Fit: "fit"\n%  UseMinos: mu_H\n')
+    (study / "work/task-1/analysis.config").write_text('Fit: "fit"\n  UseMinos: mu_H\n')
+    (study / "events/run.jsonl").write_text("\n".join(json.dumps(event) for event in [
+        {
+            "type": "item.completed",
+            "item": {"id": "p1", "type": "file_change"},
+        },
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "c1", "type": "command_execution",
+                "command": "python -m trex_fitter.config_verify analysis.config --actions n",
+                "aggregated_output": "VALID: analysis.config", "exit_code": 0,
+            },
+        },
+        {
+            "type": "item.completed",
+            "item": {"id": "m1", "type": "agent_message", "text": "Validation passed."},
+        },
+    ]) + "\n")
+    record = {
+        "task_id": "task-1",
+        "status": "completed",
+        "score": {"passed": True},
+        "workspace": "work/task-1",
+        "event_file": "events/run.jsonl",
+        "prompt": "Validate analysis.config.",
+        "category": "fit_controls",
+        "required_evidence": "S",
+    }
+    metadata = {
+        "harness": "codex",
+        "harness_version": "test",
+        "model": "source-model",
+        "split": "train",
+        "source_dataset": EXPORT.ACTIVE_SOURCE_DATASET,
+    }
+    row = EXPORT.render(study, record, metadata)
+    assert row["schema_version"] == "hyy-trexfitter-native-trajectory/v0.6"
+    assert row["tool_contract"] == "canonical-code-tools/v1"
+    assert "target_model_family" not in row
+    assert "target_chat_template" not in row
+    assert "assistant_loss_mask" not in row
+    assert row["verification"]["agent_validation_observed"] is True
+    PREFLIGHT.semantic_check(row)
+
+
+def test_native_export_rejects_verifier_that_precedes_final_edit(tmp_path):
+    messages = [
+        {
+            "role": "assistant", "content": "Validating.",
+            "tool_calls": [{
+                "id": "verify", "type": "function", "function": {
+                    "name": "shell", "arguments": {
+                        "command": "python -m trex_fitter.config_verify analysis.config --actions n"
+                    },
+                },
+            }],
+        },
+        {"role": "tool", "tool_call_id": "verify", "content": "VALID: analysis.config"},
+        {
+            "role": "assistant", "content": "One more edit.",
+            "tool_calls": [{
+                "id": "patch", "type": "function", "function": {
+                    "name": "apply_patch", "arguments": {"patch": "*** Begin Patch"},
+                },
+            }],
+        },
+        {"role": "tool", "tool_call_id": "patch", "content": "Patch applied."},
+        {"role": "assistant", "content": "Validation passed."},
+    ]
+    try:
+        EXPORT.validate_normalized_workflow("task-1", messages, check_inputs=False)
+    except ValueError as error:
+        assert "after final edit" in str(error)
+    else:
+        raise AssertionError("trajectory with an unvalidated final edit was accepted")
+
+
+def test_native_export_rejects_trajectory_without_observed_verifier(tmp_path):
+    study = tmp_path / "study"
+    (study / "events").mkdir(parents=True)
+    (study / "events/run.jsonl").write_text(json.dumps({
+        "type": "item.completed",
+        "item": {"id": "m1", "type": "agent_message", "text": "Looks valid."},
+    }) + "\n")
+    record = {
+        "task_id": "task-1", "status": "completed", "score": {"passed": True},
+        "workspace": "work/task-1", "event_file": "events/run.jsonl",
+        "prompt": "Validate analysis.config.", "category": "fit_controls",
+        "required_evidence": "S",
+    }
+    metadata = {
+        "harness": "codex", "harness_version": "test", "model": "source-model",
+        "split": "train", "source_dataset": EXPORT.ACTIVE_SOURCE_DATASET,
+    }
+    try:
+        EXPORT.render(study, record, metadata)
+    except ValueError as error:
+        assert "no successful required config verifier call" in str(error)
+    else:
+        raise AssertionError("trajectory without a verifier call was accepted")
+
+
+def test_native_scorer_accepts_requested_edit_and_preservation(tmp_path):
+    task = next(row for row in rows(DATASET / "data/tasks.jsonl") if row["task_id"] == "hyy-traj-fit_controls-fit-minos-muh")
+    before = DATASET / task["state_before"]
+    after = tmp_path / "analysis.config"
+    after.write_text(before.read_text().replace("%  UseMinos: mu_H", "  UseMinos: mu_H"))
+    score = RUNNER.score_task(task, before, after)
+    assert score["passed"]
+    assert score["contract_ok"] and score["preservation_ok"] and score["analysis_valid"]

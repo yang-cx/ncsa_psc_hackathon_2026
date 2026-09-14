@@ -10,3 +10,6 @@
 [submodule "data/datasets/atlas-open-data-sft-dataset"]
 	path = data/datasets/atlas-open-data-sft-dataset
 	url = https://huggingface.co/datasets/ho22joshua/atlas-open-data-sft-dataset
+[submodule "data/datasets/hyy-trexfitter-agent-trajectories"]
+	path = data/datasets/hyy-trexfitter-agent-trajectories
+	url = https://huggingface.co/datasets/cxyang-ucb/hyy-sft

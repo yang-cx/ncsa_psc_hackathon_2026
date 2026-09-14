@@ -301,6 +301,13 @@ def main() -> None:
     parser.add_argument("config", type=Path)
     parser.add_argument("--actions", nargs="+", default=["n", "w", "f", "s"], help="Planned actions for conditional static checks (default: n w f s)")
     parser.add_argument("--check-inputs", action="store_true", help="Inspect ROOT metadata without reading event arrays; requires uproot")
+    parser.add_argument(
+        "--evidence-level", choices=("S", "I", "C"), default="C",
+        help=(
+            "exit-code gate: S requires static analysis, I requires static analysis and valid "
+            "inputs, C also requires Coffea compatibility (default: C for backwards compatibility)"
+        ),
+    )
     parser.add_argument("--project-dir", type=Path, help="Host root corresponding to /workdir (default: repository root)")
     parser.add_argument("--json", type=Path, dest="json_path", help="also write the full machine-readable report")
     args = parser.parse_args()
@@ -323,7 +330,15 @@ def main() -> None:
         print(f"INPUTS {'VALID' if report.inputs_valid else 'INVALID'}: {report.input_files_checked} file(s) checked")
         for issue in report.input_issues:
             print(f"  ERROR [{issue.code}] {issue.message}")
-    raise SystemExit(0 if report.valid else 1)
+    if args.evidence_level == "S":
+        passed = report.analysis_valid
+    elif args.evidence_level == "I":
+        if not args.check_inputs:
+            parser.error("--evidence-level I requires --check-inputs")
+        passed = report.analysis_valid and report.inputs_valid is True
+    else:
+        passed = report.valid
+    raise SystemExit(0 if passed else 1)
 
 
 if __name__ == "__main__":

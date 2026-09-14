@@ -57,6 +57,35 @@ Run the command once for each split. It accepts `.json`, `.jsonl`, and
 `.parquet`; use `--config-name` when one dataset repository hosts multiple
 schemas.
 
+### Hyy TRExFitter agent trajectories
+
+The current native-tool TRExFitter trajectory release is the public Hugging
+Face dataset [`cxyang-ucb/hyy-sft`](https://huggingface.co/datasets/cxyang-ucb/hyy-sft).
+It is registered as a Git submodule, matching
+`data/datasets/root-sft-dataset`, so the parent repository can pin an exact
+dataset revision. Its dataset card documents the replay gate, splits, generic
+tool contract, and Parquet loading interface.
+
+```bash
+git submodule update --init \
+  data/datasets/hyy-trexfitter-agent-trajectories
+```
+
+The dataset is public, so HTTPS checkout does not require authentication. A
+contributor who needs to push can select an SSH URL locally without editing
+`.gitmodules`:
+
+```bash
+  git config \
+  submodule.data/datasets/hyy-trexfitter-agent-trajectories.url \
+  git@hf.co:datasets/cxyang-ucb/hyy-sft
+```
+
+Dataset builders, schemas, authoring tests, and release tools live in the
+dataset repository itself. They generate ignored `.build/` workspaces; hidden
+gold states and sealed test trajectories remain local and are never included
+in the public release payload.
+
 ## ATLAS Open Data
 
 Use `fetch_atlas_opendata.sh` to download complete Open Data skims directly
