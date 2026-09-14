@@ -49,6 +49,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float)
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument(
+        "--resume", action="store_true",
+        help="Keep completed task rows, run only missing tasks, and rebuild the summary",
+    )
     return parser.parse_args()
 
 
@@ -156,18 +160,23 @@ def assistant_content(response: str) -> str:
 
 
 def summarize(rows: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str, Any]:
+    strict_passes = sum(row.get("passed", row["score"]["passed"] and row["verifier_observed"]) for row in rows)
     return {
         **metadata,
         "tasks": len(rows),
-        "passed": sum(row["score"]["passed"] for row in rows),
-        "pass_rate": sum(row["score"]["passed"] for row in rows) / len(rows),
+        "passed": strict_passes,
+        "pass_rate": strict_passes / len(rows) if rows else None,
+        "correct_final_config": sum(row["score"]["passed"] for row in rows),
         "verifier_observed": sum(row["verifier_observed"] for row in rows),
         "tool_errors": sum(row["tool_errors"] for row in rows),
         "tool_counts": dict(sorted(sum((Counter(row["tool_counts"]) for row in rows), Counter()).items())),
         "by_domain": {
             domain: {
                 "tasks": len(group),
-                "passed": sum(row["score"]["passed"] for row in group),
+                "passed": sum(
+                    row.get("passed", row["score"]["passed"] and row["verifier_observed"])
+                    for row in group
+                ),
             }
             for domain in sorted({row["domain"] for row in rows})
             for group in [[row for row in rows if row["domain"] == domain]]
@@ -194,19 +203,27 @@ def main() -> None:
     if missing:
         raise ValueError(f"missing canonical prompt rows: {sorted(missing)}")
 
-    model, tokenizer, resolved, device = load_model(
-        args.checkpoint, args.device, base_model=args.base_model
-    )
-    import torch
-    torch.manual_seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
-
     args.output_dir.mkdir(parents=True, exist_ok=True)
     output = args.output_dir / "results.jsonl"
-    if output.exists():
+    if output.exists() and not args.resume:
         raise FileExistsError(output)
-    results: list[dict[str, Any]] = []
+    results = read_jsonl(output) if output.exists() else []
+    completed_ids = {row["task_id"] for row in results}
+    if len(completed_ids) != len(results):
+        raise ValueError(f"{output}: duplicate task IDs")
+    tasks = [task for task in tasks if task["task_id"] not in completed_ids]
+
+    model = tokenizer = None
+    resolved, device = args.checkpoint, args.device
+    if tasks:
+        model, tokenizer, resolved, device = load_model(
+            args.checkpoint, args.device, base_model=args.base_model
+        )
+        import torch
+        torch.manual_seed(args.seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(args.seed)
+
     for task in tasks:
         row = prompts[task["task_id"]]
         started = time.perf_counter()
@@ -270,6 +287,9 @@ def main() -> None:
             "task_id": task["task_id"],
             "domain": row["domain"],
             "score": score,
+            # Strict trajectory success requires both a correct final state and
+            # an observed successful verifier call after the last patch.
+            "passed": score["passed"] and verifier_observed,
             "verifier_observed": verifier_observed,
             "tool_errors": tool_errors,
             "tool_counts": dict(tool_counts),

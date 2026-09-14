@@ -7,6 +7,7 @@ from inference.evaluate_native_qwen import (
     assistant_content,
     execute_tool,
     prompt_rows,
+    summarize,
 )
 from trex_fitter.patch_apply import apply_patch
 
@@ -42,3 +43,16 @@ def test_tool_executor_rejects_workspace_escape(tmp_path: Path):
         execute_tool("read_file", {"path": "../secret"}, tmp_path)
     with pytest.raises(ValueError, match="workspace-relative"):
         execute_tool("search_files", {"mode": "path_glob", "query": "../*"}, tmp_path)
+
+
+def test_summary_requires_correct_state_and_observed_verifier():
+    rows = [
+        {"domain": "d", "score": {"passed": True}, "verifier_observed": False,
+         "tool_errors": 0, "tool_counts": {}},
+        {"domain": "d", "score": {"passed": True}, "verifier_observed": True,
+         "tool_errors": 0, "tool_counts": {}},
+    ]
+    result = summarize(rows, {})
+    assert result["correct_final_config"] == 2
+    assert result["passed"] == 1
+    assert result["pass_rate"] == 0.5
