@@ -12,6 +12,13 @@ export UV_PROJECT_ENVIRONMENT="$VERL_SFT_ENV"
 mkdir -p "$UV_CACHE_DIR"
 uv sync --project "$REPO_ROOT/verl" --frozen --extra fsdp
 
+# The same environment evaluates agent edits with the repository verifier.
+# Install its lightweight static/input-inspection dependencies explicitly;
+# the host project itself targets Python 3.11 while the pinned VERL image uses
+# Python 3.12, so installing the whole host environment here would be invalid.
+uv pip install --python "$VERL_SFT_ENV/bin/python" \
+  'awkward>=2.8,<3' 'pydantic==2.11.7' 'uproot>=5.6,<6'
+
 export VERL_SFT_ENV
 "$VERL_SFT_ENV/bin/python" - <<'PY'
 import importlib.metadata

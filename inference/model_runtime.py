@@ -176,15 +176,41 @@ def parse_generated_tool_calls(model: Any, tokenizer: Any, response: str) -> lis
     function/parameter markup.  Keeping that parser beside the checkpoint's
     chat template avoids a second repository-authored wire format.
     """
-    from transformers.cli.serving.utils import get_tool_call_config, parse_tool_calls
-
-    config = get_tool_call_config(tokenizer, model)
-    if config is None:
+    model_type = model.config.model_type
+    if model_type in {"qwen3_5", "qwen3_5_moe"}:
+        schema = {
+            "x-regex-iterator": r"<function=(?P<name>[^>\n]+)>(?P<arguments>.*?)</function>",
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "arguments": {
+                        "type": "object",
+                        "x-regex-key-value": r"<parameter=(?P<key>[^>\n]+)>\s*(?P<value>.*?)\s*</parameter>",
+                    },
+                },
+            },
+        }
+    elif model_type in {
+        "qwen2", "qwen2_moe", "qwen2_vl", "qwen2_5_vl", "qwen3",
+        "qwen3_moe", "qwen3_next", "qwen3_vl", "qwen3_vl_moe",
+    }:
+        schema = {
+            "x-regex-iterator": r"<tool_call>(.*?)</tool_call>",
+            "type": "array",
+            "items": {"type": "object", "x-parser": "json"},
+        }
+    else:
         return []
-    parsed = parse_tool_calls(tokenizer, response, config["schema"]) or []
+    runtime = getattr(tokenizer, "tokenizer", tokenizer)
+    parsed = runtime.parse_response(response, schema) or []
+    if not isinstance(parsed, list):
+        parsed = [parsed]
     calls = []
     for index, call in enumerate(parsed):
-        arguments = call.get("arguments", "{}")
+        function = call.get("function", call)
+        arguments = function.get("arguments", {})
         if isinstance(arguments, str):
             arguments = json.loads(arguments)
         if not isinstance(arguments, dict):
@@ -192,7 +218,7 @@ def parse_generated_tool_calls(model: Any, tokenizer: Any, response: str) -> lis
         calls.append({
             "id": f"call-{index}",
             "type": "function",
-            "function": {"name": call["name"], "arguments": arguments},
+            "function": {"name": function["name"], "arguments": arguments},
         })
     return calls
 

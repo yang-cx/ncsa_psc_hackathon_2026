@@ -1,7 +1,12 @@
 import json
 from types import SimpleNamespace
 
-from inference.model_runtime import _adapter_base_model, generation_kwargs, resolve_model
+from inference.model_runtime import (
+    _adapter_base_model,
+    generation_kwargs,
+    parse_generated_tool_calls,
+    resolve_model,
+)
 
 
 def test_resolve_verl_adapter_only_export_and_base_model(tmp_path):
@@ -68,3 +73,19 @@ def test_generation_greedy_ignores_sampling_only_parameters():
     assert "top_p" not in kwargs
     assert "top_k" not in kwargs
     assert "min_p" not in kwargs
+
+
+def test_qwen35_tool_parser_uses_tokenizer_response_schema():
+    class Tokenizer:
+        def parse_response(self, response, schema):
+            assert "x-regex-iterator" in schema
+            assert response.startswith("<tool_call>")
+            return [{"name": "read_file", "arguments": {"path": "analysis.config"}}]
+
+    model = SimpleNamespace(config=SimpleNamespace(model_type="qwen3_5"))
+    calls = parse_generated_tool_calls(model, Tokenizer(), "<tool_call>...</tool_call>")
+    assert calls == [{
+        "id": "call-0",
+        "type": "function",
+        "function": {"name": "read_file", "arguments": {"path": "analysis.config"}},
+    }]
