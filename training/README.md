@@ -118,6 +118,14 @@ The launcher:
 - writes step metrics to `$SAVE_DIR/metrics.jsonl` through VERL's file logger;
 - supports one-step smoke tests with `TOTAL_TRAINING_STEPS=1`.
 
+For a strong-scaling point, use `run_verl_throughput_point.sh` with a fresh
+`SAVE_DIR`. It timestamps VERL's per-step token counts, excludes the first
+compile/warm-up step, and reports total non-padding training-sequence tokens
+per steady-state wall-clock second. Hold the model, data order, global batch,
+maximum sequence length, optimizer, and fixed step count constant while
+changing only the A100 count. Multi-node runs start the watcher only on rank
+zero, so every point has one unambiguous timing record.
+
 For Qwen3.5's Gated Delta Net implementation, the current study disables
 remove-padding and dynamic-batch paths. Larger models should first pass the
 same tokenizer preflight and a one-step memory/checkpoint smoke test.
