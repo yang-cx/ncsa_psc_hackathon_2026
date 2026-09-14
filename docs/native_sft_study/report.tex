@@ -2,6 +2,7 @@
 \usepackage[margin=0.78in]{geometry}
 \usepackage{booktabs}
 \usepackage{graphicx}
+\usepackage[section]{placeins}
 \usepackage{hyperref}
 \usepackage{xcolor}
 \usepackage{enumitem}
@@ -16,6 +17,7 @@
 \setlist{nosep,leftmargin=1.4em}
 \setlength{\parskip}{0.48em}
 \setlength{\parindent}{0pt}
+\setlength{\emergencystretch}{2em}
 \newcommand{\figdir}{artifacts/reports/native-sft-study-20260914/figures}
 \newcommand{\code}[1]{\texttt{#1}}
 \title{Teaching Qwen to Edit and Verify TRExFitter Configurations\\
@@ -61,8 +63,11 @@ stronger semantic-equivalence level reserved for reinforcement learning (RL).
 \section{Dataset: analysis decisions, not arbitrary prose}
 
 The public release is
-\href{https://huggingface.co/datasets/cxyang-ucb/hyy-sft}{\code{cxyang-ucb/hyy-sft}}
-(Hugging Face revision \code{ea52627d07328d0a554886989dda96e444921ee6}).
+\href{https://huggingface.co/datasets/cxyang-ucb/hyy-sft}{\code{cxyang-ucb/hyy-sft}}.
+Its immutable Hugging Face revision is:
+\begin{center}
+\small\texttt{ea52627d07328d0a554886989dda96e444921ee6}
+\end{center}
 It has 129 training and 38 validation trajectories.  These correspond to 120
 training and 36 validation \emph{logical tasks}: nine tasks have both a
 deterministic trajectory and a real teacher rollout in training, and two have
@@ -98,6 +103,18 @@ diff.  After receiving the tool result, it calls \code{shell} with
 --evidence-level S}.  Only after observing exit code zero does it report that
 validation passed.  A held-out example follows the same protocol but asks for
 \code{UseMinos: mu\_H}; its answer is never used in training.
+
+\begin{verbatim}
+assistant -> apply_patch:
+  Fit: "fit"
++   FitBlind: TRUE
+    FitType: SPLUSB
+
+tool -> assistant: Patch applied successfully.
+assistant -> shell: python -m trex_fitter.config_verify ...
+tool -> assistant: Exit code: 0; VALID; COMPATIBLE
+assistant: requested state is present and validation passed
+\end{verbatim}
 
 These are ordinary harness capabilities---read/search a file, patch it, and run
 a bounded shell command.  They are neither MCP calls nor a TRExFitter-specific
@@ -138,7 +155,9 @@ are masked, and only observable tool behavior and final answers are learned.
 
 \section{Training design}
 
-Training uses \code{verl.trainer.sft\_trainer}, BF16, FSDP, gradient
+Training uses VERL's documented
+\href{https://verl.readthedocs.io/en/latest/examples/config.html}{SFT trainer}
+(\code{verl.trainer.sft\_trainer}), BF16, FSDP, gradient
 checkpointing, one epoch, seed 1, and assistant-only loss.  ``Full SFT'' updates
 all model parameters.  ``LoRA'' (low-rank adaptation) trains small low-rank
 matrices while leaving the original weights frozen, reducing memory and
@@ -186,6 +205,26 @@ only 36 tasks they are necessarily wide.
 checkpoint to its trained counterpart under matched evaluation settings.}
 \end{figure}
 
+\begin{table}[ht]
+\centering
+\small
+\begin{tabular}{llrrr}
+\toprule
+Checkpoint & Project training & Base & After SFT & Change \\
+\midrule
+Qwen2.5-Coder-0.5B & Full & 0/36 & 0/36 & 0.0 pp \\
+Qwen3.5-0.8B & Full & 0/36 & 4/36 & +11.1 pp \\
+Qwen3.5-0.8B & LoRA & 0/36 & 1/36 & +2.8 pp \\
+Qwen3.5-2B & Full & 0/36 & 2/36 & +5.6 pp \\
+Qwen3.5-4B & LoRA & 0/36 & 9/36 & +25.0 pp \\
+Qwen3.5-9B & LoRA & 0/36 & 13/36 & +36.1 pp \\
+Qwen3.5-35B-A3B & LoRA & 0/36 & 0/36 & 0.0 pp \\
+\bottomrule
+\end{tabular}
+\caption{Exact matched results.  ``pp'' means percentage points.  Base is the
+same public instruct checkpoint before any project SFT.}
+\end{table}
+
 \begin{figure}[ht]
 \centering
 \includegraphics[width=0.95\textwidth]{\figdir/strict-task-success.png}
@@ -217,10 +256,27 @@ needed before claiming a stable effect size.
 learning rate $5\times10^{-5}$ gave 0.1200, and rank 8 at $10^{-4}$ gave
 0.0999.  This is a small one-seed ablation, not a general verdict against LoRA.
 
-\textbf{Scale.}  Qwen3.5-2B full SFT reached validation loss 0.0374; Qwen3.5-4B
-and 9B LoRA reached 0.0433 and 0.0427.  Their executed scores are reported in
-the figures and machine-readable table; loss ordering should not be substituted
-for verifier accuracy.
+\textbf{Scale.}  Qwen3.5-2B full SFT reached validation loss 0.0374 and improved
+strict success from 0/36 to 2/36 (5.6\%).  Qwen3.5-4B LoRA reached loss 0.0433
+and improved from 0/36 to 9/36 (25.0\%).  Qwen3.5-9B LoRA reached loss 0.0427
+and improved from 0/36 to 13/36 (36.1\%), the strongest open-weight result in
+this study.  Loss ordering therefore should not be substituted for verifier
+accuracy.  The untouched 4B and 9B checkpoints each produced ten correct final
+configs yet scored 0/36 strictly because neither completed a successful
+post-edit verifier call.  At these sizes, protocol adherence---not only text
+editing---is therefore the dominant measured failure.
+Because the 9B base had no wins, its 13 discordant SFT wins give a two-sided
+exact McNemar $p=0.00024$ (unadjusted for the several model comparisons).
+This supports a paired effect on this benchmark, while the single training
+seed still limits generalization.
+
+\textbf{Largest-model result.}  Qwen3.5-35B-A3B LoRA had validation loss
+0.2105 and scored 0/36 both before and after SFT.  Correct final configurations
+decreased from 13/36 to 10/36, and neither side observed a successful verifier.
+Thus this run provides no evidence of an SFT benefit.  It is not evidence that
+35B models are intrinsically worse: the mixture-of-experts architecture,
+single LoRA setting, one epoch, and small dataset prevent a controlled
+parameter-scaling inference.
 
 \textbf{Hosted controls.}  Under their registry defaults, GPT-6-Astra at low
 effort scored 22/36 (61.1\%) and GPT-5.6-Sol at medium effort scored 31/36
@@ -244,6 +300,29 @@ one task changes a cell by 25 percentage points; interpret this as diagnosis,
 not a precise ranking.}
 \end{figure}
 
+\FloatBarrier
+\subsection{Exploratory temperature study}
+
+Temperature controls sampling randomness: zero selects greedily, while larger
+values flatten the next-token distribution and make alternate actions more
+likely.  The best 0.8B full-SFT checkpoint was evaluated at 0, 0.2, and 0.7;
+nonzero runs use top-$p=0.95$ and three seeds.  Temperature zero is deterministic
+under this runtime, so it is run once.  These decoding runs do not replace the
+temperature-zero base/SFT comparison.
+
+Greedy decoding passed 4/36 tasks.  At temperature 0.2 the three seeds passed
+4, 4, and 5 tasks (mean 4.33); at 0.7 they passed 6, 3, and 1 (mean 3.33).
+The initially promising 6/36 result at 0.7 was therefore not stable.  Mean
+verifier observations were 14/36 at 0.2 and 15/36 at 0.7, versus 16/36 under
+greedy decoding.  On this small sweep, extra randomness adds variance without
+a reproducible accuracy benefit.
+
+\begin{figure}[ht]
+\centering
+\includegraphics[width=0.82\textwidth]{\figdir/temperature-study.png}
+\caption{Strict success and verifier use as decoding becomes more random.}
+\end{figure}
+
 \section{A100 throughput study}
 
 The strong-scaling experiment holds Qwen3.5-0.8B, full SFT, data order, global
@@ -254,6 +333,13 @@ time; it is not generated inference tokens per second or assistant-only tokens.
 Scaling efficiency is measured throughput divided by ideal linear scaling from
 the one-GPU point.
 
+Measured throughput was 2,846, 3,315, 3,833, and 1,684 sequence tokens/s on
+1, 2, 4, and 8 A100s, respectively.  The 4-GPU point is only 34\% of ideal
+linear scaling; the 8-GPU point is slower than one GPU.  These are short,
+single-run measurements, but they make the practical conclusion clear: adding
+GPUs to this fixed small-model workload is counterproductive without increasing
+useful work per synchronized step or improving sequence-length balance.
+
 \begin{figure}[ht]
 \centering
 \includegraphics[width=0.9\textwidth]{\figdir/a100-throughput-scaling.png}
@@ -263,18 +349,22 @@ can become communication- or input-limited, so more GPUs need not be economical.
 
 \section{What the study establishes---and what it does not}
 
-The strongest positive result is behavioral: full SFT moved 0.8B from never
-completing a verifier-backed task to sometimes performing the complete
-patch--verify--report protocol.  The strongest caution is equally important:
-assistant-token loss can look excellent while strict task accuracy remains low.
-The benchmark therefore must remain executable and matched to an untouched
-base checkpoint.
+The strongest positive result is behavioral: SFT moved several Qwen3.5 models
+from never completing a verifier-backed task to sometimes performing the full
+patch--verify--report protocol, with the 9B LoRA run improving from 0/36 to
+13/36.  The strongest caution is equally important: assistant-token loss can
+look excellent while strict task accuracy remains low, and the 35B run did not
+improve at all.  The benchmark therefore must remain executable and matched to
+an untouched base checkpoint.
 
 Limitations include one training seed, only 36 evaluated logical tasks, one
-epoch, greedy decoding, and different architecture families at 0.5B.  The
-35B-A3B model is a mixture-of-experts model (about 35B total parameters but only
-a subset active per token), so its result is not a clean dense-model scaling
-point.  Hosted controls use different underlying models and default reasoning
+epoch, and different architecture families at 0.5B.  The primary base/SFT
+comparison uses greedy decoding; only the 0.8B SFT temperature sweep has three
+stochastic seeds.  The
+35B-A3B model is a mixture-of-experts model
+(\href{https://huggingface.co/Qwen/Qwen3.5-35B-A3B}{35B total and 3B activated
+parameters according to its model card}), so its result is not a clean
+dense-model scaling point.  Hosted controls use different underlying models and default reasoning
 efforts.  No result yet tests full TRExFitter execution or histogram-level
 semantic equivalence.  Older artifact studies used a different dataset/tool
 contract and are archived rather than merged into this leaderboard.
@@ -297,7 +387,7 @@ contract and are archived rather than merged into this leaderboard.
 
 \section*{Definitions}
 
-\begin{description}[style=nextline,leftmargin=0pt]
+\begin{description}
 \item[SFT (supervised fine-tuning)] Training a model to predict demonstrated assistant actions and answers.
 \item[LoRA] A memory-efficient SFT method that learns low-rank weight updates while freezing the base weights.
 \item[Assistant-only loss] Prediction error is computed on assistant tokens; system, user, and tool-result tokens provide context but are not targets.

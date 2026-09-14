@@ -28,7 +28,7 @@ GRAY = "#6B7280"
 TRAINING_RUNS = {
     "Qwen2.5-Coder 0.5B · full · LR 1e−5": "verl-qwen25-coder-0.5b-full-lr1e-5-e1",
     "Qwen3.5 0.8B · full · LR 1e−5": "verl-qwen35-0.8b-full-lr1e-5-e1",
-    "Qwen3.5 0.8B · LoRA r16 · LR 1e−4": "verl-qwen35-0.8b-lora-r16-lr1e-4-e1",
+    "Qwen3.5 0.8B · LoRA r16 · LR 1e−4": "verl-qwen35-0.8b-lora-r16-lr1e4-e1",
     "Qwen3.5 0.8B · LoRA r16 · LR 5e−5": "verl-qwen35-0.8b-lora-r16-lr5e-5-e1",
     "Qwen3.5 0.8B · LoRA r8 · LR 1e−4": "verl-qwen35-0.8b-lora-r8-lr1e-4-e1",
     "Qwen3.5 2B · full · LR 1e−5": "verl-qwen35-2b-full-lr1e-5-e1",
@@ -114,7 +114,7 @@ def finish(fig: plt.Figure, filename: str) -> None:
 def training_curves() -> list[dict]:
     rows_out = []
     fig, ax = plt.subplots(figsize=(8.4, 4.7))
-    colors = [BLUE, ORANGE, GREEN, RED, PURPLE, "#56B4E9", "#CC79A7", GRAY]
+    colors = [BLUE, ORANGE, GREEN, RED, PURPLE, "#56B4E9", "#CC79A7", GRAY, "#8C564B"]
     for color, (label, run) in zip(colors, TRAINING_RUNS.items()):
         path = ARTIFACTS / "checkpoints" / run / "metrics.jsonl"
         if not path.exists():
@@ -350,26 +350,50 @@ def category_heatmap(summaries: dict[str, dict]) -> None:
 
 
 def temperature_study() -> None:
-    runs = [
-        (0.0, "qwen35-0.8b-full-lr1e-5-e1"),
-        (0.2, "qwen35-0.8b-full-temp0.2-seed1"),
-        (0.7, "qwen35-0.8b-full-temp0.7-seed1"),
-    ]
-    points = []
-    for temperature, run in runs:
-        summary = strict_summary(ARTIFACTS / "evaluation" / run)
-        if summary:
-            points.append((temperature, summary))
-    if len(points) < 2:
+    runs = {
+        0.0: [(1, "qwen35-0.8b-full-lr1e-5-e1")],
+        0.2: [(1, "qwen35-0.8b-full-temp0.2-seed1"),
+              (2, "qwen35-0.8b-full-temp0.2-seed2"),
+              (3, "qwen35-0.8b-full-temp0.2-seed3")],
+        0.7: [(1, "qwen35-0.8b-full-temp0.7-seed1"),
+              (2, "qwen35-0.8b-full-temp0.7-seed2"),
+              (3, "qwen35-0.8b-full-temp0.7-seed3")],
+    }
+    groups: dict[float, list[tuple[int, dict]]] = {}
+    rows = []
+    for temperature, candidates in runs.items():
+        complete = []
+        for seed, run in candidates:
+            summary = strict_summary(ARTIFACTS / "evaluation" / run)
+            if summary:
+                complete.append((seed, summary))
+                rows.append({
+                    "temperature": temperature,
+                    "seed": seed,
+                    "strict_passed": summary["passed"],
+                    "tasks": summary["tasks"],
+                    "verifier_observed": summary["verifier_observed"],
+                })
+        if complete:
+            groups[temperature] = complete
+    if len(groups) < 2:
         return
-    x = np.arange(len(points))
+    temperatures = sorted(groups)
+    x = np.arange(len(temperatures))
     width = 0.34
-    strict = [100 * summary["passed"] / summary["tasks"] for _, summary in points]
-    verifier = [100 * summary["verifier_observed"] / summary["tasks"] for _, summary in points]
+    strict_samples = [[100 * summary["passed"] / summary["tasks"] for _, summary in groups[t]] for t in temperatures]
+    verifier_samples = [[100 * summary["verifier_observed"] / summary["tasks"] for _, summary in groups[t]] for t in temperatures]
+    strict = [float(np.mean(values)) for values in strict_samples]
+    verifier = [float(np.mean(values)) for values in verifier_samples]
     fig, ax = plt.subplots(figsize=(7.4, 4.4))
-    ax.bar(x - width / 2, strict, width, color=BLUE, label="Strict task success")
-    ax.bar(x + width / 2, verifier, width, color=ORANGE, label="Successful verifier observed")
-    ax.set_xticks(x, [str(temperature) for temperature, _ in points])
+    ax.bar(x - width / 2, strict, width, color=BLUE, label="Mean strict task success")
+    ax.bar(x + width / 2, verifier, width, color=ORANGE, label="Mean successful verifier observed")
+    for index, values in enumerate(strict_samples):
+        ax.scatter(np.full(len(values), x[index] - width / 2), values, s=18, color="#17212B", zorder=3)
+    for index, values in enumerate(verifier_samples):
+        ax.scatter(np.full(len(values), x[index] + width / 2), values, s=18, color="#17212B", zorder=3)
+    ax.set_xticks(x, [f"{temperature}\n(n={len(groups[temperature])} seed{'s' if len(groups[temperature]) != 1 else ''})"
+                      for temperature in temperatures])
     ax.set_xlabel("Sampling temperature (top-p = 0.95 when temperature > 0)")
     ax.set_ylabel("Validation tasks (%)")
     ax.set_ylim(0, 105)
@@ -380,6 +404,10 @@ def temperature_study() -> None:
         for position, value in zip(positions, values):
             ax.text(position, value + 1.5, f"{value:.1f}%", ha="center", fontsize=8)
     finish(fig, "temperature-study.png")
+    with (OUTPUT / "temperature-summary.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["temperature", "seed", "strict_passed", "tasks", "verifier_observed"])
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def throughput_scaling() -> None:
@@ -431,6 +459,21 @@ def main() -> None:
     temperature_study()
     throughput_scaling()
     manifest = {
+        "schema_version": "trexfitter-native-sft-study-plots/v1",
+        "dataset": {
+            "repository": "cxyang-ucb/hyy-sft",
+            "revision": "ea52627d07328d0a554886989dda96e444921ee6",
+            "train_trajectories": 129,
+            "validation_trajectories": 38,
+            "evaluated_validation_tasks": 36,
+        },
+        "matched_qwen_evaluation": {
+            "max_turns": 4,
+            "max_new_tokens": 768,
+            "temperature": 0.0,
+            "seed": 1,
+            "strict_pass_requires_verifier_after_last_patch": True,
+        },
         "training_runs": TRAINING_RUNS,
         "evaluation_runs": EVALUATION_RUNS,
         "generated_figures": sorted(path.name for path in FIGURES.glob("*.png")),
