@@ -9,6 +9,10 @@ PYTHON="${VERL_PYTHON:-$VERL_SFT_ENV/bin/python}"
 MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3.5-0.8B}"
 MODEL_REVISION="${MODEL_REVISION:-}"
 NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+NNODES="${NNODES:-1}"
+NODE_RANK="${NODE_RANK:-${SLURM_NODEID:-0}}"
+MASTER_ADDR="${MASTER_ADDR:-}"
+MASTER_PORT="${MASTER_PORT:-29500}"
 VERL_DATA_DIR="${VERL_DATA_DIR:-$REPO_ROOT/artifacts/native-sft/verl/main-agent-approved}"
 TRAIN_FILE="${TRAIN_FILE:-$VERL_DATA_DIR/train.parquet}"
 VAL_FILE="${VAL_FILE:-$VERL_DATA_DIR/validation.parquet}"
@@ -65,8 +69,24 @@ if [[ "$USE_PEFT" == "1" ]]; then
 fi
 
 cd "$REPO_ROOT"
-exec "$PYTHON" -m torch.distributed.run --standalone --nnodes=1 \
-  --nproc_per_node="$NPROC_PER_NODE" -m verl.trainer.sft_trainer \
+launcher=(--nproc_per_node="$NPROC_PER_NODE")
+if [[ "$NNODES" == "1" ]]; then
+  launcher+=(--standalone --nnodes=1)
+else
+  if [[ -z "$MASTER_ADDR" ]]; then
+    echo "MASTER_ADDR is required when NNODES is greater than one." >&2
+    exit 2
+  fi
+  launcher+=(
+    --nnodes="$NNODES"
+    --node_rank="$NODE_RANK"
+    --master_addr="$MASTER_ADDR"
+    --master_port="$MASTER_PORT"
+  )
+fi
+
+exec "$PYTHON" -m torch.distributed.run "${launcher[@]}" \
+  -m verl.trainer.sft_trainer \
   "data.train_files=$TRAIN_FILE" \
   "data.val_files=$VAL_FILE" \
   data.messages_key=messages \
@@ -97,6 +117,8 @@ exec "$PYTHON" -m torch.distributed.run --standalone --nnodes=1 \
   "trainer.project_name=$PROJECT_NAME" \
   "trainer.experiment_name=$EXPERIMENT_NAME" \
   'trainer.logger=[console,file]' \
+  "trainer.nnodes=$NNODES" \
+  "trainer.n_gpus_per_node=$NPROC_PER_NODE" \
   "trainer.total_epochs=$TOTAL_EPOCHS" \
   "trainer.total_training_steps=$TOTAL_TRAINING_STEPS" \
   "trainer.test_freq=$TEST_FREQ" \

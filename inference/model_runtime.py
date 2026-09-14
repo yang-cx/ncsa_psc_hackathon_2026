@@ -169,6 +169,34 @@ def _decode(runtime: Any, token_ids: Any, *, skip_special_tokens: bool = True) -
     return runtime.decode(token_ids, skip_special_tokens=skip_special_tokens)
 
 
+def parse_generated_tool_calls(model: Any, tokenizer: Any, response: str) -> list[dict[str, Any]]:
+    """Parse a checkpoint-native response into canonical function calls.
+
+    Transformers owns the family-specific response schema, including Qwen3.5's
+    function/parameter markup.  Keeping that parser beside the checkpoint's
+    chat template avoids a second repository-authored wire format.
+    """
+    from transformers.cli.serving.utils import get_tool_call_config, parse_tool_calls
+
+    config = get_tool_call_config(tokenizer, model)
+    if config is None:
+        return []
+    parsed = parse_tool_calls(tokenizer, response, config["schema"]) or []
+    calls = []
+    for index, call in enumerate(parsed):
+        arguments = call.get("arguments", "{}")
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments)
+        if not isinstance(arguments, dict):
+            raise ValueError(f"tool call {index} arguments are not a JSON object")
+        calls.append({
+            "id": f"call-{index}",
+            "type": "function",
+            "function": {"name": call["name"], "arguments": arguments},
+        })
+    return calls
+
+
 def generation_kwargs(
     tokenizer: Any,
     max_new_tokens: int,

@@ -42,6 +42,9 @@ def test_verl_launcher_uses_native_sft_trainer_and_hard_gates():
     assert "data.truncation=error" in launcher
     assert "enable_thinking=false" in launcher
     assert "trainer.logger=[console,file]" in launcher
+    assert 'trainer.nnodes=$NNODES' in launcher
+    assert 'trainer.n_gpus_per_node=$NPROC_PER_NODE' in launcher
+    assert '--master_addr="$MASTER_ADDR"' in launcher
 
 
 def test_verl_preflight_checks_full_render_and_assistant_mask():

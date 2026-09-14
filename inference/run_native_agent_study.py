@@ -65,7 +65,7 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def scoreable_tasks(dataset_root: Path) -> list[dict[str, Any]]:
-    """Load the v0.4 contracts plus additive native-development families."""
+    """Load the current scored task contracts."""
     tasks = read_jsonl(dataset_root / "data/tasks.jsonl")
     source_dir = dataset_root / "data/native/source_tasks"
     for path in sorted(source_dir.glob("*.jsonl")):
@@ -423,7 +423,7 @@ def main() -> None:
     version = subprocess.run([args.harness, "--version"], text=True, capture_output=True, check=False).stdout.strip()
     metadata = {
         "schema_version": "trexfitter-native-agent-study/v1",
-        "source_dataset": "hyy-trexfitter-agent-trajectories/v0.4+v0.5-dev-reconstruction",
+        "source_dataset": "cxyang-ucb/hyy-sft",
         "harness": args.harness,
         "harness_version": version,
         "model": args.model,
