@@ -2,13 +2,13 @@
 
 We are building a starting point for teaching a small language model to operate a high-energy-physics analysis environment through agentic tools.
 
-We will release several small, verified one-turn datasets: TRExFitter config work, ROOT-file inspection and modification, ATLAS Open Data knowledge, and execution/result interpretation. Each supported config task has three aligned renderings: Codex and OpenCode tool-use harnesses, plus a direct natural-language-to-config response for the model endpoint. The direct response contains only an insertable config snippet; the agent versions use bounded tools to inspect, repair, validate, and run. All sibling renderings share a logical task ID and split. Compatible family releases are then composed into a separate long-horizon dataset.
+We will release several small, verified one-turn datasets: TRExFitter config work, ROOT-file inspection and modification, ATLAS Open Data knowledge, and execution/result interpretation. Each supported config task has two semantic renderings: a model-neutral coding-agent trajectory using one generic tool interface, plus a direct natural-language-to-config response. Codex and OpenCode may supply verified source runs, but their harness-specific events are normalized before SFT. The selected checkpoint tokenizer—not the dataset—creates Qwen-specific tokens. All trajectory variants share a logical task ID and split. Compatible family releases are then composed into a separate long-horizon dataset.
 
 Our first starting point is the working H→γγ config at [data/configs/examples/hyy.config](data/configs/examples/hyy.config).
 
 ## Clone it
 
-`verl` is a Git submodule. Clone it with the repository:
+`verl` is retained as a Git submodule for the later RL stage. Clone it with the repository:
 
 ```bash
 git clone --recurse-submodules git@github.com:JO5HO4/ncsa_psc_hackathon_2026.git
@@ -47,7 +47,8 @@ development group. Optional extras separate ROOT-file metadata (`inputs`),
 histogramming (`coffea`), and the optional ATLAS collection schema
 (`atlas-schema`). Select extras explicitly in both `uv sync` and `uv run`.
 These dependencies do not install ROOT or TRExFitter; those remain in the
-existing container. Training/inference keep their separate verl environment.
+existing container. Active SFT and later RL use the pinned VERL environment
+documented in `training/README.md`.
 The local `.venv/` is ignored; commit dependency changes with the lockfile.
 
 ## Main folders
@@ -56,9 +57,10 @@ The local `.venv/` is ignored; commit dependency changes with the lockfile.
 | --- | --- |
 | [data/](data/README.md) | Dataset families, fixtures, and publishing conventions |
 | [trex_fitter/](trex_fitter/) | The code that checks and runs configs |
-| [training/](training/README.md) | Training with verl |
+| [training/](training/README.md) | Qwen native-agent SFT and later RL with VERL |
 | [inference/](inference/README.md) | Testing a trained model |
 | [docs/ATLAS_WORKFLOW.md](docs/ATLAS_WORKFLOW.md) | Reproduce the ATLAS command benchmark |
+| [Hyy TRExFitter agent dataset](data/datasets/hyy-trexfitter-agent-trajectories/README.md) | Replay-approved generic-tool trajectories, Parquet mirrors, and dataset audit tools |
 | [docs/](docs/HACKATHON.md) | The plan and task list |
 
 Start with the [hackathon plan](docs/HACKATHON.md), then pick a task from the [task board](docs/TASK_BOARD.md).

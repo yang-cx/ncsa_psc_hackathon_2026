@@ -3,97 +3,103 @@ set -euo pipefail
 unset VIRTUAL_ENV
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-VERL_DIR="${VERL_DIR:-$REPO_ROOT/verl}"
-cd "$VERL_DIR"
-export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-/tmp/verl-venv}"
+VERL_SFT_ENV="${VERL_SFT_ENV:-/tmp/verl-sft-venv}"
+PYTHON="${VERL_PYTHON:-$VERL_SFT_ENV/bin/python}"
 
-source "$REPO_ROOT/training/scripts/qwen35_profile.sh"
+MODEL_PATH="${MODEL_PATH:-Qwen/Qwen3.5-0.8B}"
+MODEL_REVISION="${MODEL_REVISION:-}"
+NPROC_PER_NODE="${NPROC_PER_NODE:-1}"
+VERL_DATA_DIR="${VERL_DATA_DIR:-$REPO_ROOT/artifacts/native-sft/verl/main-agent-approved}"
+TRAIN_FILE="${TRAIN_FILE:-$VERL_DATA_DIR/train.parquet}"
+VAL_FILE="${VAL_FILE:-$VERL_DATA_DIR/validation.parquet}"
+SAVE_DIR="${SAVE_DIR:-$REPO_ROOT/artifacts/checkpoints/verl-qwen35-0.8b-native-sft}"
 
-NPROC_PER_NODE="${NPROC_PER_NODE:-$QWEN35_DEFAULT_GPUS}"
-# These defaults run the included reference config dataset. Override them when
-# training on a hackathon-created split.
-TRAIN_FILE="${TRAIN_FILE:-$REPO_ROOT/data/reference/hep-config-sft/data/train.parquet}"
-VAL_FILE="${VAL_FILE:-$REPO_ROOT/data/reference/hep-config-sft/data/validation.parquet}"
-SAVE_DIR="${SAVE_DIR:-$REPO_ROOT/artifacts/checkpoints/$QWEN35_PROFILE_NAME-sft}"
-
-TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-16}"
+TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-8}"
 MICRO_BATCH_SIZE_PER_GPU="${MICRO_BATCH_SIZE_PER_GPU:-1}"
-MAX_TOKEN_LEN_PER_GPU="${MAX_TOKEN_LEN_PER_GPU:-8192}"
-MAX_LENGTH="${MAX_LENGTH:-2048}"
-LR="${LR:-1e-5}"
-TOTAL_EPOCHS="${TOTAL_EPOCHS:-3}"
-PROJECT_NAME="${PROJECT_NAME:-trex-config-hackathon}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-$QWEN35_PROFILE_NAME-sft}"
+MAX_LENGTH="${MAX_LENGTH:-12288}"
+LR="${LR:-1e-4}"
+TOTAL_EPOCHS="${TOTAL_EPOCHS:-1}"
+TOTAL_TRAINING_STEPS="${TOTAL_TRAINING_STEPS:-null}"
+USE_PEFT="${USE_PEFT:-1}"
 LORA_RANK="${LORA_RANK:-16}"
 LORA_ALPHA="${LORA_ALPHA:-16}"
-LORA_TARGETS="${LORA_TARGETS:-[\"q_proj\",\"k_proj\",\"v_proj\",\"o_proj\",\"gate_proj\",\"up_proj\",\"down_proj\"]}"
-# Save each completed epoch by default.  On a resumed StatefulDataLoader run,
-# VERL can finish the configured epoch loop before its global-step counter
-# reaches the nominal final step.  A final-step-only save would then discard
-# all newly trained weights when the process exits.
+LORA_TARGETS="${LORA_TARGETS:-all-linear}"
+PROJECT_NAME="${PROJECT_NAME:-trexfitter-native-sft}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-$(basename "$SAVE_DIR")}"
+USE_REMOVE_PADDING="${USE_REMOVE_PADDING:-false}"
+USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-false}"
+PAD_MODE="${PAD_MODE:-no_padding}"
+RESUME_MODE="${RESUME_MODE:-disable}"
+TEST_FREQ="${TEST_FREQ:-after_each_epoch}"
 SAVE_FREQ="${SAVE_FREQ:-after_each_epoch}"
-TEST_FREQ="${TEST_FREQ:--1}"
-RESUME_MODE="${RESUME_MODE:-auto}"
-# Epoch checkpoints are complete FSDP states. Keep the newest one by default
-# so this safety measure does not consume one full checkpoint per epoch.
-MAX_CKPT_TO_KEEP="${MAX_CKPT_TO_KEEP:-1}"
-# Convert the final raw FSDP checkpoint into a normal Hugging Face model after
-# training. This also handles the default LoRA setup correctly.
-EXPORT_FOR_INFERENCE="${EXPORT_FOR_INFERENCE:-true}"
-MASTER_ADDR="${MASTER_ADDR:-127.0.0.1}"
-ENGINE_MODEL_DTYPE="${ENGINE_MODEL_DTYPE:-bf16}"
-ENGINE_USE_TORCH_COMPILE="${ENGINE_USE_TORCH_COMPILE:-true}"
+METRICS_FILE="${METRICS_FILE:-$SAVE_DIR/metrics.jsonl}"
 
-uv run --frozen --extra fsdp --extra sglang torchrun --standalone --nnodes=1 --nproc_per_node="$NPROC_PER_NODE" --master_addr="$MASTER_ADDR" \
-  -m verl.trainer.sft_trainer \
-  data.train_files="$TRAIN_FILE" \
-  data.val_files="$VAL_FILE" \
+if [[ ! -x "$PYTHON" ]]; then
+  echo "Missing VERL SFT environment at $PYTHON" >&2
+  echo "Inside the training container, run: source training/scripts/setup_verl_sft.sh" >&2
+  exit 2
+fi
+
+mkdir -p "$SAVE_DIR"
+export VERL_FILE_LOGGER_PATH="$METRICS_FILE"
+for dataset_file in "$TRAIN_FILE" "$VAL_FILE"; do
+  if [[ ! -f "$dataset_file" ]]; then
+    echo "Missing VERL SFT Parquet: $dataset_file" >&2
+    echo "Run training/prepare_verl_sft.py on the replay-approved JSONL first." >&2
+    exit 2
+  fi
+done
+
+if [[ -n "$MODEL_REVISION" ]]; then
+  echo "MODEL_REVISION does not pin VERL model weights." >&2
+  echo "Resolve that revision first and pass its exact local snapshot as MODEL_PATH." >&2
+  exit 2
+fi
+model_args=("model.path=$MODEL_PATH")
+if [[ "$USE_PEFT" == "1" ]]; then
+  model_args+=(
+    "model.lora_rank=$LORA_RANK"
+    "model.lora_alpha=$LORA_ALPHA"
+    "model.target_modules=$LORA_TARGETS"
+  )
+fi
+
+cd "$REPO_ROOT"
+exec "$PYTHON" -m torch.distributed.run --standalone --nnodes=1 \
+  --nproc_per_node="$NPROC_PER_NODE" -m verl.trainer.sft_trainer \
+  "data.train_files=$TRAIN_FILE" \
+  "data.val_files=$VAL_FILE" \
   data.messages_key=messages \
   data.tools_key=tools \
-  data.custom_cls.path="$REPO_ROOT/training/verl_dataset.py" \
-  data.custom_cls.name=TReXConfigSFTDataset \
-  data.train_batch_size="$TRAIN_BATCH_SIZE" \
-  data.micro_batch_size_per_gpu="$MICRO_BATCH_SIZE_PER_GPU" \
-  data.max_token_len_per_gpu="$MAX_TOKEN_LEN_PER_GPU" \
-  data.max_length="$MAX_LENGTH" \
+  data.enable_thinking_key=enable_thinking \
+  data.enable_thinking_default=false \
+  '+data.apply_chat_template_kwargs.enable_thinking=false' \
+  "data.custom_cls.path=$REPO_ROOT/training/verl_dataset.py" \
+  data.custom_cls.name=TReXNativeToolSFTDataset \
+  +data.require_native_tool_contract=true \
+  "data.train_batch_size=$TRAIN_BATCH_SIZE" \
+  "data.micro_batch_size_per_gpu=$MICRO_BATCH_SIZE_PER_GPU" \
+  "data.max_length=$MAX_LENGTH" \
+  "data.max_token_len_per_gpu=$MAX_LENGTH" \
+  "data.pad_mode=$PAD_MODE" \
   data.truncation=error \
-  data.ignore_input_ids_mismatch=True \
-  data.num_workers=2 \
-  optim.lr="$LR" \
+  "data.use_dynamic_bsz=$USE_DYNAMIC_BSZ" \
+  data.num_workers=0 \
+  data.ignore_input_ids_mismatch=false \
   engine=fsdp \
-  engine.model_dtype="$ENGINE_MODEL_DTYPE" \
-  engine.use_torch_compile="$ENGINE_USE_TORCH_COMPILE" \
-  model.path="$MODEL_PATH" \
-  model.use_remove_padding=true \
-  model.lora_rank="$LORA_RANK" \
-  model.lora_alpha="$LORA_ALPHA" \
-  model.target_modules="$LORA_TARGETS" \
-  trainer.default_local_dir="$SAVE_DIR" \
-  trainer.project_name="$PROJECT_NAME" \
-  trainer.experiment_name="$EXPERIMENT_NAME" \
-  trainer.logger=console \
-  trainer.n_gpus_per_node="$NPROC_PER_NODE" \
-  trainer.total_epochs="$TOTAL_EPOCHS" \
-  trainer.save_freq="$SAVE_FREQ" \
-  trainer.test_freq="$TEST_FREQ" \
-  trainer.max_ckpt_to_keep="$MAX_CKPT_TO_KEEP" \
-  trainer.resume_mode="$RESUME_MODE" \
-  "$@"
-
-if [[ "$EXPORT_FOR_INFERENCE" == "true" ]]; then
-  tracker="$SAVE_DIR/latest_checkpointed_iteration.txt"
-  if [[ ! -r "$tracker" ]]; then
-    echo "No checkpoint tracker found at $tracker; skipping inference export." >&2
-    exit 1
-  fi
-  read -r last_step < "$tracker"
-  if [[ ! "$last_step" =~ ^[0-9]+$ ]]; then
-    echo "Invalid checkpoint step in $tracker: $last_step" >&2
-    exit 1
-  fi
-  checkpoint_dir="$SAVE_DIR/global_step_$last_step"
-  uv run --frozen --extra fsdp --extra sglang python -m verl.model_merger merge \
-    --backend fsdp \
-    --local_dir "$checkpoint_dir" \
-    --target_dir "$checkpoint_dir/huggingface"
-fi
+  engine.dtype=bfloat16 \
+  engine.model_dtype=bf16 \
+  engine.use_torch_compile=false \
+  "model.use_remove_padding=$USE_REMOVE_PADDING" \
+  model.enable_gradient_checkpointing=true \
+  "optim.lr=$LR" \
+  "trainer.default_local_dir=$SAVE_DIR" \
+  "trainer.project_name=$PROJECT_NAME" \
+  "trainer.experiment_name=$EXPERIMENT_NAME" \
+  'trainer.logger=[console,file]' \
+  "trainer.total_epochs=$TOTAL_EPOCHS" \
+  "trainer.total_training_steps=$TOTAL_TRAINING_STEPS" \
+  "trainer.test_freq=$TEST_FREQ" \
+  "trainer.save_freq=$SAVE_FREQ" \
+  "trainer.resume_mode=$RESUME_MODE" \
+  "${model_args[@]}" "$@"
