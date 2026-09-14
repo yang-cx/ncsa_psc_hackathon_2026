@@ -134,8 +134,14 @@ def load_model(
             # Keep roughly 10 GB for generation and allocator headroom while
             # streaming the checkpoint directly to the accelerator.
             gpu_limit = os.environ.get("QWEN35_GPU_MEMORY_GIB", "30")
-            load_kwargs["max_memory"] = {0: f"{gpu_limit}GiB", "cpu": "40GiB"}
+            load_kwargs["max_memory"] = {
+                **{index: f"{gpu_limit}GiB" for index in range(torch.cuda.device_count())},
+                "cpu": "160GiB",
+            }
     model = model_class.from_pretrained(load_source, **load_kwargs)
+    # VERL stores the frozen base-layer weights in the HF export and writes the
+    # learned low-rank tensors beside them in ``lora_adapter``.  The nested
+    # adapter therefore remains necessary even though full base weights exist.
     if adapter_path is not None:
         from peft import PeftModel
 
@@ -158,23 +164,48 @@ def _move_inputs_to_model(inputs: Any, device: str) -> dict[str, Any]:
     return {key: value.to(device) if hasattr(value, "to") else value for key, value in dict(inputs).items()}
 
 
-def _decode(runtime: Any, token_ids: Any) -> str:
+def _decode(runtime: Any, token_ids: Any, *, skip_special_tokens: bool = True) -> str:
     """Decode generated IDs using either an AutoTokenizer or AutoProcessor."""
-    return runtime.decode(token_ids, skip_special_tokens=True)
+    return runtime.decode(token_ids, skip_special_tokens=skip_special_tokens)
 
 
-def generation_kwargs(tokenizer: Any, max_new_tokens: int, temperature: float, top_p: float | None) -> dict[str, Any]:
+def generation_kwargs(
+    tokenizer: Any,
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float | None,
+    model: Any | None = None,
+    *,
+    top_k: int | None = None,
+    min_p: float | None = None,
+    repetition_penalty: float = 1.0,
+) -> dict[str, Any]:
     underlying_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    eos_token_ids = []
+    configured_eos = getattr(getattr(model, "generation_config", None), "eos_token_id", None)
+    for token_id in (
+        configured_eos if isinstance(configured_eos, (list, tuple)) else [configured_eos]
+    ):
+        if token_id is not None and token_id not in eos_token_ids:
+            eos_token_ids.append(token_id)
+    if underlying_tokenizer.eos_token_id not in eos_token_ids:
+        eos_token_ids.append(underlying_tokenizer.eos_token_id)
     kwargs: dict[str, Any] = {
         "max_new_tokens": max_new_tokens,
         "pad_token_id": underlying_tokenizer.pad_token_id,
-        "eos_token_id": underlying_tokenizer.eos_token_id,
+        "eos_token_id": eos_token_ids,
         "do_sample": temperature > 0,
     }
     if temperature > 0:
         kwargs["temperature"] = temperature
         if top_p is not None:
             kwargs["top_p"] = top_p
+        if top_k is not None:
+            kwargs["top_k"] = top_k
+        if min_p is not None:
+            kwargs["min_p"] = min_p
+    if repetition_penalty != 1.0:
+        kwargs["repetition_penalty"] = repetition_penalty
     return kwargs
 
 
@@ -186,6 +217,9 @@ def generate_text(
     max_new_tokens: int,
     temperature: float,
     top_p: float | None = None,
+    top_k: int | None = None,
+    min_p: float | None = None,
+    repetition_penalty: float = 1.0,
 ) -> str:
     """Generate a completion for a literal text prompt."""
     import torch
@@ -198,7 +232,10 @@ def generate_text(
     with torch.inference_mode():
         generated = model.generate(
             **inputs,
-            **generation_kwargs(tokenizer, max_new_tokens, temperature, top_p),
+            **generation_kwargs(
+                tokenizer, max_new_tokens, temperature, top_p, model,
+                top_k=top_k, min_p=min_p, repetition_penalty=repetition_penalty,
+            ),
         )
     completion_ids = generated[0, input_ids.shape[-1] :]
     return _decode(tokenizer, completion_ids)
@@ -207,12 +244,16 @@ def generate_text(
 def generate_chat(
     model: Any,
     tokenizer: Any,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     max_new_tokens: int,
     temperature: float,
     top_p: float | None = None,
+    top_k: int | None = None,
+    min_p: float | None = None,
+    repetition_penalty: float = 1.0,
     enable_thinking: bool = False,
+    tools: list[dict[str, Any]] | None = None,
 ) -> str:
     """Generate one assistant turn with the checkpoint's native chat template."""
     import torch
@@ -220,6 +261,7 @@ def generate_chat(
     if _uses_multimodal_processor(tokenizer):
         inputs = tokenizer.apply_chat_template(
             messages,
+            tools=tools,
             add_generation_prompt=True,
             tokenize=True,
             return_dict=True,
@@ -230,17 +272,27 @@ def generate_chat(
         )
         inputs = _move_inputs_to_model(inputs, model.device)
     else:
-        input_ids = tokenizer.apply_chat_template(
+        inputs = tokenizer.apply_chat_template(
             messages,
+            tools=tools,
             add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
             return_tensors="pt",
-        ).to(model.device)
-        inputs = {"input_ids": input_ids}
+            enable_thinking=enable_thinking,
+        )
+        inputs = _move_inputs_to_model(inputs, model.device)
     input_ids = inputs["input_ids"]
     with torch.inference_mode():
         generated = model.generate(
             **inputs,
-            **generation_kwargs(tokenizer, max_new_tokens, temperature, top_p),
+            **generation_kwargs(
+                tokenizer, max_new_tokens, temperature, top_p, model,
+                top_k=top_k, min_p=min_p, repetition_penalty=repetition_penalty,
+            ),
         )
     completion_ids = generated[0, input_ids.shape[-1] :]
-    return _decode(tokenizer, completion_ids)
+    # Tool-capable templates may encode call delimiters as special tokens.
+    # Preserve them whenever a schema is present; the agent parser removes any
+    # terminal chat-control tokens after extracting the call.
+    return _decode(tokenizer, completion_ids, skip_special_tokens=tools is None)
