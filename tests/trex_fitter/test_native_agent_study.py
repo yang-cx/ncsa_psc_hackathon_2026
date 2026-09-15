@@ -1,7 +1,12 @@
 import importlib.util
 import json
 import sys
+import threading
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+import pytest
 
 
 PROJECT = Path(__file__).resolve().parents[2]
@@ -167,6 +172,54 @@ def test_cli_command_uses_qwen_code_native_tools_and_headless_protocol(tmp_path)
     assert env["QWEN_CODE_MAX_OUTPUT_TOKENS"] == "4096"
 
 
+def test_qwen_sampling_proxy_changes_only_requested_generation_fields():
+    captured = {}
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_POST(self):  # noqa: N802
+            raw = self.rfile.read(int(self.headers["Content-Length"]))
+            captured.update(json.loads(raw))
+            response = b'{"ok": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+    try:
+        upstream = ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
+    except PermissionError:
+        pytest.skip("sandbox forbids loopback sockets")
+    upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    upstream_thread.start()
+    proxy = RUNNER.QwenSamplingProxy(
+        f"http://127.0.0.1:{upstream.server_port}/v1",
+        {"temperature": 0.2, "top_p": 0.95, "seed": 7},
+    )
+    proxy.start()
+    try:
+        request = urllib.request.Request(
+            proxy.base_url + "/chat/completions",
+            data=json.dumps({"model": "qwen", "messages": [{"role": "user", "content": "x"}]}).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        assert json.load(urllib.request.urlopen(request)) == {"ok": True}
+    finally:
+        proxy.close()
+        upstream.shutdown()
+        upstream.server_close()
+    assert captured == {
+        "model": "qwen",
+        "messages": [{"role": "user", "content": "x"}],
+        "temperature": 0.2,
+        "top_p": 0.95,
+        "seed": 7,
+    }
+
+
 def test_parse_events_accepts_qwen_buffered_json_and_stream_json():
     events = [{"type": "system"}, {"type": "result", "subtype": "success"}]
     assert RUNNER.parse_events(json.dumps(events)) == events
@@ -290,6 +343,10 @@ def test_native_scope_gate_rejects_parent_reads_and_allows_workspace_paths(tmp_p
     assert RUNNER.native_scope_violations("codex", codex, workspace) == [
         "shell command referenced a path outside the task workspace"
     ]
+    codex[0]["item"]["command"] = (
+        f"python -m trex_fitter.config_verify {workspace / 'analysis.config'} --actions n"
+    )
+    assert RUNNER.native_scope_violations("codex", codex, workspace) == []
 
     qwen = [
         {

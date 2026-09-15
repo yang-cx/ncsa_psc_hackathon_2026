@@ -32,6 +32,7 @@ PROJECT_NAME="${PROJECT_NAME:-trexfitter-native-sft}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-$(basename "$SAVE_DIR")}"
 USE_REMOVE_PADDING="${USE_REMOVE_PADDING:-false}"
 USE_DYNAMIC_BSZ="${USE_DYNAMIC_BSZ:-false}"
+ULYSSES_SEQUENCE_PARALLEL_SIZE="${ULYSSES_SEQUENCE_PARALLEL_SIZE:-1}"
 PAD_MODE="${PAD_MODE:-no_padding}"
 RESUME_MODE="${RESUME_MODE:-disable}"
 TEST_FREQ="${TEST_FREQ:-after_each_epoch}"
@@ -121,6 +122,7 @@ exec "$PYTHON" -m torch.distributed.run "${launcher[@]}" \
   engine.dtype=bfloat16 \
   engine.model_dtype=bf16 \
   engine.use_torch_compile=false \
+  "engine.ulysses_sequence_parallel_size=$ULYSSES_SEQUENCE_PARALLEL_SIZE" \
   "model.use_remove_padding=$USE_REMOVE_PADDING" \
   model.enable_gradient_checkpointing=true \
   "optim.lr=$LR" \

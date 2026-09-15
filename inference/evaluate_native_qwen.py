@@ -69,10 +69,14 @@ def prompt_rows(
     dataset_root: Path, split: str, prompt_jsonl: Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     path = prompt_jsonl.resolve() if prompt_jsonl is not None else dataset_root / f"data/main-agent/{split}.jsonl"
-    rows = [row for row in read_jsonl(path) if row.get("modality") == "deterministic_generic_tools"]
+    rows = [
+        row
+        for row in read_jsonl(path)
+        if row.get("modality") == "deterministic_qwen_code_tools"
+    ]
     result = {row["logical_task_id"]: row for row in rows}
     if len(result) != len(rows):
-        raise ValueError(f"{path}: duplicate deterministic logical task IDs")
+        raise ValueError(f"{path}: duplicate native Qwen Code logical task IDs")
     return result
 
 

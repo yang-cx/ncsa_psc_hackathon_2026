@@ -1,0 +1,378 @@
+\documentclass[10pt]{article}
+\usepackage[margin=.68in]{geometry}
+\usepackage{booktabs,graphicx,hyperref,xcolor,enumitem,tabularx,longtable,microtype,fontspec}
+\setmainfont{TeX Gyre Heros}
+\hypersetup{colorlinks=true,urlcolor=blue!55!black,linkcolor=blue!55!black}
+\setlist{nosep,leftmargin=1.35em}
+\setlength{\parskip}{.38em}
+\setlength{\parindent}{0pt}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\outdir}{artifacts/reports/qwen-code-native-full-study-20260915}
+\newcommand{\figdir}{\outdir/figures}
+\title{Native Qwen Code SFT Study\\\large All 36 held-out TRExFitter configuration tasks}
+\author{ATLAS $H\rightarrow\gamma\gamma$ coding-agent project}
+\date{15 September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We evaluate whether supervised fine-tuning (SFT) helps Qwen models carry out
+small but consequential TRExFitter configuration changes through the real Qwen
+Code 0.23.4 agent harness.  Every reported checkpoint is run on all 36 unique
+validation tasks, replacing the earlier six-task pilot.  Under unpinned backend
+defaults, Qwen3.5-4B base passes 21/36 tasks (58.3\%) while its one-epoch
+rank-16 LoRA checkpoint passes 15/36 (41.7\%).  With decoding fixed at
+temperature zero, top-p 0.95, and seed 1, the comparison instead becomes
+24/36 versus 26/36.  Every evaluated
+checkpoint below 4B scores 0/36 because it does not call native tools.  Loss alone is thus
+not a reliable measure of end-to-end agent quality.  At 27B, base reaches
+28/36 and LoRA reaches the study-best 29/36.  The report separates edit,
+validation, protocol, scope, and harness failures; studies temperature and
+model scale; and documents every training run without GPT-model comparisons.
+\end{abstract}
+
+\section{Problem}
+A physicist expresses an analysis decision in natural language---for example,
+``request MINOS errors for \code{mu\_H}'' or ``restore the missing \code{Sample:
+WH} block.''  The agent must locate the relevant setting in
+\code{analysis.config}, make the smallest semantically correct change, preserve
+every unrelated decision, execute the requested Python verifier, and describe
+only the evidence it actually observed.  A syntactically plausible answer is
+not enough: a wrong luminosity, bin boundary, sample reference, or fit switch
+can silently change the physics result.
+
+The current SFT-stage objective is deterministic static correctness.  Running
+TRExFitter and comparing output histograms would establish a stronger form of
+semantic equivalence, but that expensive executable reward belongs to the
+subsequent RL stage.
+
+\section{Dataset and held-out benchmark}
+Canonical examples are model-neutral structured \code{messages} plus optional
+tool schemas.  They do not store rendered chat markup, token IDs, or hidden
+reasoning.  The Qwen tokenizer/chat template creates model-specific native
+function-call tokens at training time.  The exact training snapshot contains
+129 replay-approved training trajectories and 38 validation conversations.
+The public dataset release is
+\href{https://huggingface.co/datasets/cxyang-ucb/hyy-sft}{cxyang-ucb/hyy-sft}.
+The exact local Parquet SHA-256 values are retained with the run artifacts:
+\begin{verbatim}
+train       133b08ca562964d6e4158bd7ced3d257924dd2705e64097a4a80b8dc92695545
+validation  2fcd9dc0cbd93ff5347652180c352d85b2f586e59c507ef0187f768a1cba7a7e
+\end{verbatim}
+Checkpoint snapshot revisions and rendered-template preflights are retained
+there as well.
+
+The execution benchmark is a separate set of 36 unique validation tasks: four
+tasks in each of nine categories---fit controls, input repairs, job/execution,
+normalization parameters, references, region binning, region presentation,
+sample settings, and whole-block reconstruction.  Splits are made by logical
+task identity so a paraphrase of the same operation cannot leak across splits.
+Each task starts from its own mutated configuration and has a machine-readable
+change contract and evidence requirement.
+
+\subsection{What one trajectory looks like}
+A deterministic training demonstration asks for \code{FitBlind: TRUE}.  Its
+assistant messages call \code{edit} with a minimal replacement, observe the
+native tool result, call \code{run\_shell\_command} with the exact verifier,
+observe exit code zero, and only then report success.  The canonical row stores
+those structured messages and calls, not the rendered Qwen syntax.
+
+One held-out task asks the agent to restore \code{UseMinos: mu\_H}, which tells
+the statistical fit to compute asymmetric MINOS uncertainty for the Higgs
+signal-strength parameter.  Both the 4B base and default LoRA checkpoint solve
+this example: they read the file, replace the commented line, and obtain a
+successful verifier result.  The scorer then independently confirms the
+requested value and preservation of every unrelated setting.  This is one
+illustrative success, not evidence for the aggregate comparison by itself.
+
+\begin{verbatim}
+%  UseMinos: mu_H        ->        UseMinos: mu_H
+python -m trex_fitter.config_verify analysis.config --actions n \
+  --evidence-level S
+\end{verbatim}
+
+\section{Native execution and independent scoring}
+Qwen Code owns the agent loop and exposes its three bare-mode built-ins:
+\code{read\_file}, \code{edit}, and \code{run\_shell\_command}.  The model can
+use ordinary search commands and runs
+\code{python -m trex\_fitter.config\_verify}; no repository-defined config-edit
+tool is exposed.  Each task runs in an initialized, disposable Git workspace.
+The repository scorer runs only after Qwen Code exits and cannot be called by
+the model as a shortcut.
+For the 27B runs, four disjoint workers share one four-GPU inference server to
+fit the allocation.  This changes only scheduling: each of the 36 tasks still
+has a separate Qwen Code process, Git workspace, event stream, and score, and
+the combined task IDs are checked for uniqueness before reporting.
+
+\textbf{Strict success} means that all of the following independently checked
+conditions hold:
+\begin{enumerate}
+  \item \textbf{Requested edit}: the named setting has the requested semantic value;
+  \item \textbf{Preservation}: every unrelated semantic setting is unchanged;
+  \item \textbf{Static evidence}: parsing and the task's S/C/I evidence level pass;
+  \item \textbf{Verifier protocol}: a successful exact verifier call is observed
+        after the final edit;
+  \item \textbf{Workspace scope}: successful native calls stay inside the
+        disposable task and use only approved native tools;
+  \item \textbf{Harness completion}: the Qwen Code process completes normally.
+\end{enumerate}
+The first three diagnose file correctness.  The last three diagnose whether an
+agent completed the requested tool protocol safely.  Failures can overlap.
+The verifier's one-letter evidence levels are: \textbf{S}, static syntax,
+types, and references only; \textbf{I}, static checks plus inspection of input
+ROOT-file metadata; and \textbf{C}, static checks plus compatibility with the
+project's Coffea execution path.  Coffea is the Python event-processing system
+used by this analysis.  The letter is a required verification depth, not a
+model score.
+
+\section{Training setup and reasoning behavior}
+VERL performs assistant-only SFT with BF16, one epoch, seed 1, and no
+truncation.  Runs through 9B use global batch 8 and 16 optimizer steps.  The
+27B capacity run uses global batch 16 and eight steps across 16 A100s.  The
+maximum sequence length is 16,384 through 9B.  The 27B tokenizer renders its
+longest training row as 13,629
+tokens, so that run uses 14,336 without truncation.  A 16,384-token attempt ran
+out of memory even on eight A100s; a 12,288-token attempt correctly stopped on
+the first row longer than its declared limit.  The final 27B configuration
+uses four-way Ulysses sequence parallelism, which distributes token positions
+within each group, plus removal of padding tokens before model computation.
+Preflight
+checks confirm correct assistant-span masks, identical turn-wise/full
+rendering, the pinned tokenizer/template revision, and
+\code{enable\_thinking=False}.  LoRA (low-rank adaptation) freezes the base
+weights and learns small rank-16 updates; full SFT updates every model weight.
+An assistant-span mask marks exactly which assistant-written tokens contribute
+to the training loss; user prompts and tool outputs are context, not targets.
+BF16 is a memory-efficient 16-bit number format.  An optimizer step is one
+parameter update; the learning rate (LR) controls its size.  An A100 is the GPU
+accelerator used for both training and serving.
+
+\input{\outdir/training-results.tex}
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Checkpoint & Update & LR & A100s & Steps & Held-out loss & Peak GB/GPU \\
+\midrule
+\trainingresultrows
+\bottomrule
+\end{tabular}
+\caption{Fresh training on the Qwen Code-native snapshot.  Held-out loss is
+assistant-token imitation loss, not execution accuracy.}
+\end{table}
+
+The Qwen3.5 checkpoints are reasoning-capable; the 0.5B comparison instead uses
+Qwen2.5-Coder.  Hidden reasoning is not an SFT target.  For Qwen3.5, the serving
+template's default enables thinking and the native event streams explicitly
+contain \code{thinking} blocks.  Thus those models do use inference-time
+reasoning, while training supervises only visible assistant/tool behavior.  A
+controlled no-thinking evaluation tests this train/inference mismatch separately.
+
+\begin{figure}[ht]
+\centering\includegraphics[width=.72\textwidth]{\figdir/thinking-ablation.pdf}
+\caption{The same 36 tasks with the serving template's thinking behavior on or
+explicitly disabled.  This isolates inference-time reasoning from SFT.}
+\end{figure}
+
+Disabling thinking changes base performance modestly, from 21/36 to 19/36,
+but collapses the default LoRA checkpoint from 15/36 to 1/36.  The disabled
+runs contain zero thinking blocks, confirming that the control took effect.
+This checkpoint therefore depends strongly on inference-time reasoning even
+though hidden reasoning was excluded from its SFT loss.  The result exposes a
+train/inference mismatch; it does not justify adding private chain-of-thought
+to the dataset, because visible planning and recovery behavior can instead be
+supervised and scored.
+
+\begin{figure}[ht]
+\centering\includegraphics[width=.9\textwidth]{\figdir/training-curves.pdf}
+\caption{Training loss by optimizer step; diamonds are final held-out loss.
+Different model sizes are not expected to share an absolute loss scale.}
+\end{figure}
+
+\subsection{LoRA hyperparameter ablation}
+\begin{figure}[ht]
+\centering\includegraphics[width=.9\textwidth]{\figdir/hyperparameter-ablation.pdf}
+\caption{Three one-epoch 4B LoRA runs compare rank and learning rate.  The
+left panel is native execution; the right panel is trajectory-imitation loss.
+Both are needed because a lower loss need not produce a better agent.}
+\end{figure}
+
+The default run uses rank 16 and learning rate $10^{-4}$.  One ablation lowers
+the learning rate tenfold, and another halves the adapter rank while preserving
+the default learning rate.  Global batch, data, seed, context length, and epoch
+count are fixed; execution uses temperature zero, top-p 0.95, and seed 1 for
+all three checkpoints.  The default used four GPUs whereas the new ablations used one
+each; the global optimizer batch is unchanged, but small distributed-numerical
+differences mean this is not a mathematically exact one-variable experiment.
+Rank 16 at LR $10^{-4}$ reaches held-out loss 0.079 and 26/36 strict successes.
+Lowering LR to $10^{-5}$ underfits the demonstrations (loss 0.535) but still
+reaches 24/36.  Halving the rank gives loss 0.089 and 27/36, one task above the
+default.  On this sample, rank 8 is the more economical choice, but the one-task
+accuracy difference is too small to claim a stable quality improvement.
+
+\section{Checkpoint results}
+\input{\outdir/checkpoint-results.tex}
+\begin{table}[ht]
+\centering\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Checkpoint & Tasks & Strict success & CLI failures & Native calls & Thinking blocks \\
+\midrule
+\checkpointresultrows
+\bottomrule
+\end{tabular}
+\caption{All entries use the same 36 tasks.  ``CLI failures'' means Qwen Code
+returned nonzero or timed out; it is not automatically an editing failure.}
+\end{table}
+
+\begin{figure}[ht]
+\centering\includegraphics[width=.94\textwidth]{\figdir/strict-success-by-checkpoint.pdf}
+\caption{Strict end-to-end success.  Gray bars are unmodified base models;
+blue bars are SFT checkpoints.  Error bars are 95\% Wilson binomial intervals;
+that is a small-sample uncertainty range for the observed success fraction.
+They are wide because the benchmark contains only 36 tasks.}
+\end{figure}
+
+\begin{figure}[ht]
+\centering\includegraphics[width=.62\textwidth]{\figdir/controlled-4b-pair.pdf}
+\caption{The causal 4B comparison with identical temperature zero, top-p 0.95,
+seed 1, harness, prompt, and 36 tasks.  This removes the backend-default
+sampling ambiguity in the original pair.}
+\end{figure}
+
+The controlled comparison gives base 24/36 and LoRA 26/36, a two-task LoRA
+advantage.  This is directionally different from the backend-default pair and
+shows that decoding is a material experimental variable.  With only 36 tasks,
+neither small difference should be presented as a stable model ranking without
+additional seeds.
+
+Under backend-default sampling, the 4B result reverses what training loss alone
+might suggest.  LoRA lowers
+held-out imitation loss to 0.079, yet strict execution falls by six tasks from
+base.  The SFT checkpoint makes more tool calls and emits more thinking blocks,
+but activity is not correctness.  It also has more CLI failures.  At 0.8B,
+base, LoRA, and full SFT all produce one thinking response per task and no tool
+calls, so neither optimization method crosses the basic agent-capability
+threshold.  The 0.8B full-versus-LoRA comparison therefore shows no execution
+advantage for updating all weights despite the lower full-SFT held-out loss.
+The 0.5B and 2B base/full pairs likewise make no native calls and score zero.
+At 9B, base reaches 20/36 and LoRA reaches 19/36: the gap is smaller than at
+4B, but SFT still does not improve strict success and increases CLI failures
+from four to nine.  These are descriptive results on 36 tasks, not sufficiently
+large samples for fine-grained statistical claims.  Scaling to 27B produces the
+best absolute results: base reaches 28/36 with two CLI failures and LoRA reaches
+29/36 with one.  Their category profiles differ---LoRA improves input repair,
+job/execution, and region presentation, but loses one fit-control and one sample
+setting task---so the one-task aggregate gain is not broad dominance.
+
+\section{Where checkpoints fail}
+\begin{figure}[ht]
+\centering\includegraphics[width=.98\textwidth]{\figdir/diagnostic-gates.pdf}
+\caption{A bar counts a gate independently.  ``Static evidence'' means the
+final file passes the required deterministic checker; ``verifier observed''
+means the agent itself successfully ran the exact command after its last edit.}
+\end{figure}
+
+\begin{figure}[ht]
+\centering\includegraphics[width=.98\textwidth]{\figdir/category-results.pdf}
+\caption{Category-level strict results.  Each cell has exactly four tasks, so
+labels show counts rather than potentially misleading percentages.}
+\end{figure}
+
+The gate plot distinguishes three common stories.  First, a model can leave a
+valid configuration but fail to make the requested change (edit-contract
+failure).  Second, it can make the correct change but omit or fail the required
+verifier (protocol failure).  Third, the CLI or endpoint can fail even when a
+partial edit is reasonable (harness failure).  Treating all three as simply
+``wrong answer'' would hide whether better demonstrations, decoding, or systems
+engineering is needed.
+
+\section{Temperature study}
+\begin{figure}[ht]
+\centering\includegraphics[width=.72\textwidth]{\figdir/temperature-study.pdf}
+\caption{Each temperature is evaluated on all 36 tasks with seed 1 and
+top-p 0.95.  Temperature controls randomness: zero selects the most likely
+continuation, while larger values permit more varied choices.  Top-p 0.95
+restricts sampling to tokens covering the most likely 95\% of probability;
+the seed fixes the pseudo-random starting point.}
+\end{figure}
+
+The original matched runs used Qwen Code/SGLang model defaults.  In the new
+sweep, Qwen Code remains in bare mode, so its native tool definitions,
+function-call parser, execution loop, and messages are unchanged.  A transparent
+localhost proxy modifies only the OpenAI-compatible request sent to the local
+server, injecting temperature, top-p, and seed.  The run manifest records these
+overrides, making the sampling condition auditable without replacing the agent
+harness.
+
+At seed 1, temperature zero passes 26/36 tasks; temperatures 0.2 and 0.7 each
+pass 23/36.  This favors deterministic decoding for the present checkpoint,
+but a single seed cannot characterize sampling variance at nonzero temperature.
+The earlier backend-default result (15/36) is not placed on this controlled
+curve because its effective sampling parameters and random seed were not pinned.
+
+\section{Training throughput versus A100 count}
+\begin{figure}[ht]
+\centering\includegraphics[width=.72\textwidth]{\figdir/a100-throughput.pdf}
+\caption{Fresh fixed-step VERL measurements on the same native SFT snapshot.
+The metric is total non-padding training-sequence tokens divided by wall time;
+the first warm-up step is excluded and the median resists checkpoint-I/O outliers.}
+\end{figure}
+
+Throughput is an efficiency measurement, not model quality.  Scaling below the
+dashed line means communication, padding imbalance, or fixed overhead prevents
+perfect linear speedup.  It helps choose the smallest useful GPU count: adding
+GPUs is justified only when saved wall time outweighs queue and communication
+costs.  The measured medians are 7,330, 12,768, and 22,508 sequence tokens/s on
+one, two, and four A100s.  These correspond to 1.74$\times$ and 3.07$\times$
+speedup, or 87\% and 77\% parallel efficiency relative to one GPU.  Four GPUs
+therefore shorten a fixed run substantially, but do not deliver a fourfold
+speedup; using four nodes for this small checkpoint would be inefficient.
+
+\clearpage
+\section{Conclusions}
+The 36-task benchmark supports a more careful conclusion: the present SFT
+recipe does not yield a decoding-robust improvement in native Qwen Code
+performance.  It loses six tasks under backend defaults but gains two under the
+controlled temperature-zero setting, despite similarly low validation loss.
+At 27B, LoRA improves by only one task (28 to 29), again smaller than the
+benchmark's sampling uncertainty.
+The most likely limiting factors are the small number of demonstrations,
+insufficient native Qwen recovery trajectories, distribution mismatch between
+deterministic gold traces and real agent behavior, and optimization sensitivity.
+The next SFT round should increase independently replayed native successes and
+recoveries, retain the 36 tasks as untouched evaluation, and select checkpoints
+by strict execution accuracy rather than loss alone.  VERL remains appropriate
+because the same model/data stack can proceed to executable-reward RL after the
+SFT baseline is sound.
+
+\section*{Reproducibility}
+Every run stores a manifest, the Qwen Code version and sampling controls, initial
+and final configs, native JSON event streams, stderr, per-task scores, and a
+36-row summary.  A rescore-only mode reapplies current independent gates without
+rerunning a model.  An absolute path is accepted only when it resolves inside
+the task workspace; other machine paths remain a scope failure.  The runner's
+unit suite covers native call parsing, verifier ordering, semantic equivalence,
+workspace scope, and transparent request-level sampling controls.
+
+\appendix
+\section{One failure example for every checkpoint and gate}
+``No failure observed'' means that model passed that particular diagnostic gate
+on all 36 tasks; it does not imply strict success on every task.
+\scriptsize
+\input{\outdir/failure-examples.tex}
+\begin{longtable}{@{}p{.12\textwidth}p{.13\textwidth}p{.27\textwidth}p{.41\textwidth}@{}}
+\toprule
+Checkpoint & Failure type & Task & Observed example \\
+\midrule
+\endfirsthead
+\toprule
+Checkpoint & Failure type & Task & Observed example \\
+\midrule
+\endhead
+\failureexamplerows
+\bottomrule
+\end{longtable}
+
+\end{document}

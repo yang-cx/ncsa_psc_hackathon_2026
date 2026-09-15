@@ -114,40 +114,45 @@ SAVE_DIR=/workspace/artifacts/checkpoints/verl-qwen35-0.8b-lora-r16-lr1e4-e1 \
 bash training/scripts/run_verl_sft.sh
 ```
 
-The dense Qwen3.5-27B study uses the same data, LoRA rank/alpha, learning
-rate, global batch, sequence limit, and one-epoch schedule.  Four 40 GB A100s
-are not sufficient for the full dataset at this context length in the tested
-VERL configuration.  The default allocator fragmented at 38.4 GB in a smoke
-test; expandable segments completed that short test, but a longer sequence at
-step five of the full run still exhausted memory.  VERL activation offload was
-also tested, but failed before the first step with an internal activation
-window-map error for this model.  The completed full run therefore uses two
-nodes with four A100s each:
+The native Qwen Code Qwen3.5-27B study uses the same Parquet data, LoRA
+rank/alpha, learning rate, and one-epoch schedule.  Its pinned tokenizer
+renders the longest training row as 13,629 tokens, so the run uses a 14,336
+limit and rejects truncation.  Eight A100s were insufficient at this length.
+The completed run uses four nodes (16 A100s), four-way Ulysses sequence
+parallelism to distribute each long sequence within a GPU group, and
+remove-padding to avoid computation on padding tokens:
 
 ```bash
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 MASTER_ADDR="$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)" \
 MODEL_PATH=/hf_cache/hub/models--Qwen--Qwen3.5-27B/snapshots/<revision> \
-NNODES=2 \
+NNODES=4 \
 NPROC_PER_NODE=4 \
 TRAIN_BATCH_SIZE=16 \
 MICRO_BATCH_SIZE_PER_GPU=1 \
-MAX_LENGTH=12288 \
+MAX_LENGTH=14336 \
+ULYSSES_SEQUENCE_PARALLEL_SIZE=4 \
+USE_REMOVE_PADDING=true \
 LR=1e-4 \
 TOTAL_EPOCHS=1 \
 USE_PEFT=1 \
 LORA_RANK=16 \
 LORA_ALPHA=16 \
-SAVE_DIR=/workspace/artifacts/checkpoints/verl-qwen35-27b-lora-r16-lr1e-4-e1 \
-srun --nodes=2 --ntasks=2 --ntasks-per-node=1 \
+SAVE_DIR=/workspace/artifacts/checkpoints/verl-qwen35-27b-qwen-code-0.23.4-lora-r16-lr1e-4-e1-16gpu \
+srun --nodes=4 --ntasks=4 --ntasks-per-node=1 \
   bash training/scripts/run_verl_sft_slurm_worker.sh
 ```
 
 The completed study run wrote eight optimizer steps and an end-of-epoch
-validation loss of `0.1119495630` to
-`artifacts/checkpoints/verl-qwen35-27b-lora-r16-lr1e-4-e1/metrics.jsonl`.
+validation loss of `0.0982496440` to
+`artifacts/checkpoints/verl-qwen35-27b-qwen-code-0.23.4-lora-r16-lr1e-4-e1-16gpu/metrics.jsonl`.
 Its raw VERL checkpoint is `global_step_8`; the merged Hugging Face export and
-LoRA adapter are under that checkpoint's `huggingface/` directory.
+LoRA adapter are under that checkpoint's `huggingface-merged/` and
+`huggingface-exported/lora_adapter/` directories, respectively.
+Through the real Qwen Code 0.23.4 harness with backend-default sampling, the
+untouched 27B checkpoint passes 28/36 held-out tasks and this native-tool LoRA
+checkpoint passes 29/36. The one-task difference is descriptive, not evidence
+of a stable improvement without additional controlled seeds.
 
 Set `USE_PEFT=0` for full-parameter SFT. Important study controls include
 `LR`, `TRAIN_BATCH_SIZE`, `TOTAL_EPOCHS`, `LORA_RANK`, and `LORA_ALPHA`.
@@ -177,9 +182,10 @@ maximum sequence length, optimizer, and fixed step count constant while
 changing only the A100 count. Multi-node runs start the watcher only on rank
 zero, so every point has one unambiguous timing record.
 
-For Qwen3.5's Gated Delta Net implementation, the current study disables
-remove-padding and dynamic-batch paths. Larger models should first pass the
-same tokenizer preflight and a one-step memory/checkpoint smoke test.
+The smaller-model study leaves remove-padding and dynamic batching disabled.
+The 27B long-context configuration requires remove-padding together with
+four-way sequence parallelism. Larger models should first pass the same exact
+tokenizer preflight and a one-step memory/checkpoint smoke test.
 
 ## Checkpoints and inference
 
@@ -196,6 +202,10 @@ OpenCode runs retain their own native interfaces. Final accuracy comes from
 the same independent config/task verifier—not from matching generated text.
 Record syntax validity, edit success, verifier success, semantic task success,
 unauthorized changes, latency, and token counts.
+On NERSC, pass `--workspace-root "$PSCRATCH/<study-workspaces>"` to the native
+study runner so repeated `git init` operations use scratch rather than CFS.
+The runner still copies each initial and final config, event stream, stderr,
+manifest, and score into the selected artifact output directory.
 
 ### Superseded four-tool study
 

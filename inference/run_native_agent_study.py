@@ -9,7 +9,9 @@ native JSON event stream, and scores the final file only after the agent exits.
 from __future__ import annotations
 
 import argparse
+import atexit
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -18,9 +20,12 @@ import shutil
 import subprocess
 import sys
 import time
+import threading
 from collections import Counter
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +50,74 @@ QWEN_STUDY_SYSTEM = (
 )
 
 
+class QwenSamplingProxy:
+    """Transparent localhost proxy that injects documented OpenAI fields."""
+
+    def __init__(self, upstream: str, overrides: dict[str, Any]) -> None:
+        parsed = urlsplit(upstream)
+        if parsed.scheme != "http" or not parsed.hostname:
+            raise ValueError("controlled Qwen proxy currently requires an http:// upstream")
+        self._host = parsed.hostname
+        self._port = parsed.port or 80
+        self._prefix = parsed.path.rstrip("/")
+        self.overrides = overrides
+        proxy = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, format: str, *args: Any) -> None:
+                return
+
+            def do_GET(self) -> None:  # noqa: N802
+                self._forward(None)
+
+            def do_POST(self) -> None:  # noqa: N802
+                length = int(self.headers.get("content-length", "0"))
+                raw = self.rfile.read(length)
+                body = json.loads(raw) if raw else {}
+                if self.path.endswith("/chat/completions"):
+                    body.update(proxy.overrides)
+                self._forward(json.dumps(body).encode("utf-8"))
+
+            def _forward(self, body: bytes | None) -> None:
+                connection = http.client.HTTPConnection(proxy._host, proxy._port, timeout=900)
+                headers = {
+                    key: value for key, value in self.headers.items()
+                    if key.lower() not in {"host", "content-length", "connection"}
+                }
+                if body is not None:
+                    headers["Content-Type"] = "application/json"
+                    headers["Content-Length"] = str(len(body))
+                connection.request(self.command, self.path, body=body, headers=headers)
+                response = connection.getresponse()
+                self.send_response(response.status)
+                for key, value in response.getheaders():
+                    if key.lower() not in {"content-length", "connection", "transfer-encoding"}:
+                        self.send_header(key, value)
+                self.send_header("Connection", "close")
+                self.end_headers()
+                while chunk := response.read(64 * 1024):
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+                connection.close()
+                self.close_connection = True
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    @property
+    def base_url(self) -> str:
+        return f"http://127.0.0.1:{self.server.server_port}{self._prefix}"
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--harness", required=True, choices=("codex", "opencode", "qwen"))
@@ -52,6 +125,10 @@ def parse_args() -> argparse.Namespace:
                         help="Public test contracts are sealed and cannot be scored by this checkout")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--workspace-root", type=Path,
+        help="Optional scratch directory for disposable task workspaces",
+    )
     parser.add_argument("--model", required=True, help="Explicit native CLI model name for reproducibility")
     parser.add_argument(
         "--qwen-base-url",
@@ -62,6 +139,22 @@ def parse_args() -> argparse.Namespace:
         help="Fixed Qwen Code per-turn output reservation (default: 4096)",
     )
     parser.add_argument(
+        "--qwen-temperature", type=float,
+        help="Qwen Code sampling temperature; omitted to use the provider/backend default",
+    )
+    parser.add_argument(
+        "--qwen-top-p", type=float,
+        help="Qwen Code nucleus-sampling probability; omitted to use the provider/backend default",
+    )
+    parser.add_argument(
+        "--qwen-seed", type=int,
+        help="Qwen Code sampling seed; omitted to use the provider/backend default",
+    )
+    parser.add_argument(
+        "--qwen-thinking", choices=("default", "enabled", "disabled"), default="default",
+        help="Explicitly enable/disable Qwen thinking, or retain the serving default",
+    )
+    parser.add_argument(
         "--reasoning-effort", choices=("low", "medium", "high", "xhigh"),
         help="Codex reasoning effort; recorded in the study manifest (Codex only)",
     )
@@ -70,6 +163,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=900, help="Per-task CLI timeout in seconds")
     parser.add_argument("--dry-run", action="store_true", help="Materialize workspaces without calling a model")
     parser.add_argument("--resume", action="store_true", help="Skip task IDs already present in results.jsonl")
+    parser.add_argument(
+        "--rescore-only", action="store_true",
+        help="Recompute scores from saved configs/events without invoking the model",
+    )
     return parser.parse_args()
 
 
@@ -190,9 +287,8 @@ def cli_command(
         # and tool-result messages.  The allowlist names only Qwen Code's
         # built-ins; no repository-defined patch function is exposed.
         runtime_system = QWEN_STUDY_SYSTEM.replace("/workspace", str(workspace))
-        command = [
-            "qwen",
-            "--bare",
+        command = ["qwen", "--bare"]
+        command.extend([
             "--auth-type", "openai",
             # Workspaces contain one copied config and are discarded after
             # scoring, so native YOLO approval cannot affect source data.
@@ -220,7 +316,7 @@ def cli_command(
             "--max-session-turns", "20",
             "--max-tool-calls", "50",
             "--output-format", "stream-json",
-        ]
+        ])
         if model:
             command.extend(("--model", model))
         if qwen_base_url:
@@ -385,6 +481,20 @@ def _outside_workspace(path_value: str, workspace: Path) -> bool:
     return resolved != workspace and workspace not in resolved.parents
 
 
+def shell_references_outside_workspace(command: str, workspace: Path) -> bool:
+    """Conservatively flag parent/machine paths after allowing this workspace.
+
+    Native agents often pass the absolute disposable-workspace path back to a
+    shell tool.  That is in scope even on NERSC, where it begins with
+    ``/global``; only other machine paths should fail the scope gate.
+    """
+    command_without_workspace = command.replace(str(workspace.resolve()), ".")
+    return bool(
+        MACHINE_PATH.search(command_without_workspace)
+        or re.search(r"(?:^|\s)\.\.(?:/|\s|$)", command_without_workspace)
+    )
+
+
 def native_scope_violations(
     harness: str,
     events: list[dict[str, Any]],
@@ -398,7 +508,7 @@ def native_scope_violations(
             item = event.get("item") or {}
             if item.get("type") == "command_execution":
                 command = inner_shell_command(item.get("command", ""))
-                if MACHINE_PATH.search(command) or re.search(r"(?:^|\s)\.\.(?:/|\s|$)", command):
+                if shell_references_outside_workspace(command, workspace):
                     violations.add("shell command referenced a path outside the task workspace")
             elif item.get("type") == "file_change":
                 for change in item.get("changes") or []:
@@ -415,7 +525,7 @@ def native_scope_violations(
                 violations.add(f"forbidden native tool used: {tool}")
             if tool == "bash":
                 command = str(arguments.get("command", ""))
-                if MACHINE_PATH.search(command) or re.search(r"(?:^|\s)\.\.(?:/|\s|$)", command):
+                if shell_references_outside_workspace(command, workspace):
                     violations.add("shell command referenced a path outside the task workspace")
             for key in ("filePath", "path"):
                 value = arguments.get(key)
@@ -435,7 +545,7 @@ def native_scope_violations(
                 continue
             if tool == "run_shell_command":
                 command = str(arguments.get("command", ""))
-                if MACHINE_PATH.search(command) or re.search(r"(?:^|\s)\.\.(?:/|\s|$)", command):
+                if shell_references_outside_workspace(command, workspace):
                     violations.add("shell command referenced a path outside the task workspace")
             for key in ("file_path", "path", "directory"):
                 value = arguments.get(key)
@@ -553,6 +663,55 @@ def summarize(rows: list[dict[str, Any]], metadata: dict[str, Any]) -> dict[str,
     }
 
 
+def rescore_study(
+    output_dir: Path,
+    dataset_root: Path,
+    harness: str,
+    metadata: dict[str, Any],
+) -> dict[str, Any]:
+    """Reapply the current independent gates to saved native trajectories."""
+    results_path = output_dir / "results.jsonl"
+    tasks = {task["task_id"]: task for task in scoreable_tasks(dataset_root)}
+    rows = read_jsonl(results_path)
+    for record in rows:
+        if record["status"] == "prepared":
+            continue
+        task = tasks[record["task_id"]]
+        before = output_dir / "initial" / f"{record['task_id']}.config"
+        after = (
+            output_dir / record["final_config"]
+            if record.get("final_config")
+            else output_dir / record["workspace"] / "analysis.config"
+        )
+        events = parse_events((output_dir / record["event_file"]).read_text(encoding="utf-8"))
+        score = score_task(task, before, after)
+        observed = observed_agent_validation(
+            harness, events, check_inputs=task["required_evidence"] == "I"
+        )
+        score["agent_validation_observed"] = observed
+        if not observed:
+            score["passed"] = False
+            score["reasons"].append(
+                "native trajectory did not contain a successful required config verifier call"
+            )
+        violations = native_scope_violations(harness, events, (output_dir / record["workspace"]))
+        score["native_scope_ok"] = not violations
+        if violations:
+            score["passed"] = False
+            score["reasons"].extend(violations)
+        record["score"] = score
+    replacement = results_path.with_suffix(".jsonl.rescored")
+    replacement.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8"
+    )
+    replacement.replace(results_path)
+    summary = summarize(rows, metadata)
+    (output_dir / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return summary
+
+
 def main() -> None:
     args = parse_args()
     if args.limit is not None and args.limit < 1:
@@ -561,6 +720,10 @@ def main() -> None:
         raise ValueError("--timeout must be positive")
     if args.qwen_max_output_tokens < 1:
         raise ValueError("--qwen-max-output-tokens must be positive")
+    if args.qwen_temperature is not None and args.qwen_temperature < 0:
+        raise ValueError("--qwen-temperature must be non-negative")
+    if args.qwen_top_p is not None and not 0 < args.qwen_top_p <= 1:
+        raise ValueError("--qwen-top-p must be in (0, 1]")
     if args.harness == "qwen" and not (args.qwen_base_url or os.environ.get("OPENAI_BASE_URL")):
         raise ValueError("--qwen-base-url or OPENAI_BASE_URL is required for the Qwen native harness")
 
@@ -577,7 +740,43 @@ def main() -> None:
     if not tasks:
         raise ValueError("no tasks selected")
 
+    if args.rescore_only:
+        if not (args.output_dir / "results.jsonl").is_file():
+            raise FileNotFoundError(f"no saved results in {args.output_dir}")
+        metadata = json.loads((args.output_dir / "manifest.json").read_text(encoding="utf-8"))
+        print(json.dumps(
+            rescore_study(args.output_dir, dataset_root, args.harness, metadata),
+            indent=2, sort_keys=True,
+        ))
+        return
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    workspace_root = (
+        args.workspace_root.resolve()
+        if args.workspace_root is not None
+        else args.output_dir.resolve() / "workspaces"
+    )
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    qwen_base_url = args.qwen_base_url or os.environ.get("OPENAI_BASE_URL")
+    qwen_sampling_overrides: dict[str, Any] = {}
+    qwen_proxy = None
+    effective_qwen_base_url = qwen_base_url
+    if args.harness == "qwen":
+        if args.qwen_temperature is not None:
+            qwen_sampling_overrides["temperature"] = args.qwen_temperature
+        if args.qwen_top_p is not None:
+            qwen_sampling_overrides["top_p"] = args.qwen_top_p
+        if args.qwen_seed is not None:
+            qwen_sampling_overrides["seed"] = args.qwen_seed
+        if args.qwen_thinking != "default":
+            enabled = args.qwen_thinking == "enabled"
+            qwen_sampling_overrides["reasoning_effort"] = "high" if enabled else "none"
+            qwen_sampling_overrides["chat_template_kwargs"] = {"enable_thinking": enabled}
+    if qwen_sampling_overrides:
+        qwen_proxy = QwenSamplingProxy(qwen_base_url, qwen_sampling_overrides)
+        qwen_proxy.start()
+        atexit.register(qwen_proxy.close)
+        effective_qwen_base_url = qwen_proxy.base_url
     results_path = args.output_dir / "results.jsonl"
     already = existing_ids(results_path) if args.resume else set()
     if results_path.exists() and not args.resume:
@@ -591,9 +790,15 @@ def main() -> None:
         "harness_version": version,
         "model": args.model,
         "reasoning_effort": args.reasoning_effort,
-        "qwen_base_url": args.qwen_base_url or os.environ.get("OPENAI_BASE_URL"),
+        "qwen_base_url": qwen_base_url,
         "qwen_max_output_tokens": args.qwen_max_output_tokens if args.harness == "qwen" else None,
+        "qwen_temperature": args.qwen_temperature if args.harness == "qwen" else None,
+        "qwen_top_p": args.qwen_top_p if args.harness == "qwen" else None,
+        "qwen_seed": args.qwen_seed if args.harness == "qwen" else None,
+        "qwen_thinking": args.qwen_thinking if args.harness == "qwen" else None,
+        "qwen_sampling_proxy_overrides": qwen_sampling_overrides if args.harness == "qwen" else None,
         "split": args.split,
+        "workspace_root": str(workspace_root),
         "timeout_seconds": args.timeout,
         "dry_run": args.dry_run,
     }
@@ -604,7 +809,7 @@ def main() -> None:
             task_id = task["task_id"]
             if task_id in already:
                 continue
-            workspace = args.output_dir / "workspaces" / task_id
+            workspace = workspace_root / task_id
             materialize_workspace(task, dataset_root, workspace, args.harness)
             before_copy = args.output_dir / "initial" / f"{task_id}.config"
             before_copy.parent.mkdir(parents=True, exist_ok=True)
@@ -615,7 +820,11 @@ def main() -> None:
                 "complexity": task["complexity"],
                 "required_evidence": task["required_evidence"],
                 "initial_sha256": sha256(before_copy),
-                "workspace": str(workspace.relative_to(args.output_dir)),
+                "workspace": (
+                    str(workspace.relative_to(args.output_dir.resolve()))
+                    if workspace.is_relative_to(args.output_dir.resolve())
+                    else str(workspace)
+                ),
             }
             if args.dry_run:
                 record["status"] = "prepared"
@@ -624,14 +833,16 @@ def main() -> None:
                 record["prompt"] = prompt
                 command = cli_command(
                     args.harness, workspace, prompt, args.model, args.reasoning_effort,
-                    args.qwen_base_url,
+                    effective_qwen_base_url,
                 )
                 started = time.perf_counter()
                 try:
                     process = subprocess.run(
                         command, text=True, capture_output=True, timeout=args.timeout,
                         cwd=workspace,
-                        env=safe_environment(args.harness, args.qwen_max_output_tokens),
+                        env=safe_environment(
+                            args.harness, args.qwen_max_output_tokens,
+                        ),
                         check=False,
                     )
                     record["status"] = "completed" if process.returncode == 0 else "cli_error"
@@ -658,6 +869,10 @@ def main() -> None:
                 record["event_file"] = str(event_path.relative_to(args.output_dir))
                 record["stderr_file"] = str(stderr_path.relative_to(args.output_dir))
                 after = workspace / "analysis.config"
+                final_copy = args.output_dir / "final" / f"{task_id}.config"
+                final_copy.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(after, final_copy)
+                record["final_config"] = str(final_copy.relative_to(args.output_dir))
                 record["final_sha256"] = sha256(after)
                 record["score"] = score_task(task, before_copy, after)
                 validation_observed = observed_agent_validation(
