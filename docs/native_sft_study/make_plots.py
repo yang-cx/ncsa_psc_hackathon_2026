@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build concise figures and tables for the native-tool SFT study."""
+"""Build concise figures and tables for the generic-tool SFT study."""
 
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ TRAINING_RUNS = {
     "Qwen3.5 2B · full · LR 1e−5": "verl-qwen35-2b-full-lr1e-5-e1",
     "Qwen3.5 4B · LoRA r16 · LR 1e−4": "verl-qwen35-4b-lora-r16-lr1e-4-e1",
     "Qwen3.5 9B · LoRA r16 · LR 1e−4": "verl-qwen35-9b-lora-r16-lr1e-4-e1",
+    "Qwen3.5 27B · LoRA r16 · LR 1e−4": "verl-qwen35-27b-lora-r16-lr1e-4-e1",
     "Qwen3.5 35B-A3B · LoRA r16 · LR 1e−4": "verl-qwen35-35b-a3b-lora-r16-lr1e-4-e1",
 }
 
@@ -49,9 +50,13 @@ EVALUATION_RUNS = {
     "Qwen3.5 4B · LoRA SFT": "qwen35-4b-lora-r16-lr1e-4-e1",
     "Qwen3.5 9B · base (no SFT)": "qwen35-9b-base",
     "Qwen3.5 9B · LoRA SFT": "qwen35-9b-lora-r16-lr1e-4-e1",
+    "Qwen3.5 27B · base (no SFT)": "qwen35-27b-base",
+    "Qwen3.5 27B · LoRA SFT": "qwen35-27b-lora-r16-lr1e-4-e1",
     "Qwen3.5 35B-A3B · base (no SFT)": "qwen35-35b-a3b-base",
     "Qwen3.5 35B-A3B · LoRA SFT": "qwen35-35b-a3b-lora-r16-lr1e-4-e1",
     "GPT-6-Astra · default low effort": "codex-gpt-6-astra-default",
+    "GPT-6-Astra · medium effort": "codex-gpt-6-astra-medium",
+    "GPT-5.6-Sol · low effort": "codex-gpt-5.6-sol-low",
     "GPT-5.6-Sol · default medium effort": "codex-gpt-5.6-sol-default",
 }
 
@@ -77,14 +82,28 @@ def strict_summary(directory: Path) -> dict | None:
         else bool(row["score"]["passed"])
         for row in rows
     ]
+    final_config = [
+        bool(row["score"].get("contract_ok"))
+        and bool(row["score"].get("analysis_valid"))
+        and bool(row["score"].get("preservation_ok"))
+        and bool(row["score"].get("evidence_ok"))
+        and row["score"].get("inputs_valid") is not False
+        for row in rows
+    ]
     return {
         "tasks": len(rows),
         "passed": sum(strict),
         "pass_rate": sum(strict) / len(rows),
         "requested_state": sum(bool(row["score"].get("contract_ok")) for row in rows),
-        "correct_final_config": sum(bool(row["score"].get("passed")) for row in rows),
+        # Keep file-content correctness separate from whether the agent ran the
+        # required verifier. Native-harness score.passed includes that protocol
+        # gate, whereas Qwen score.passed does not.
+        "correct_final_config": sum(final_config),
         "analysis_valid": sum(bool(row["score"].get("analysis_valid")) for row in rows),
         "preservation_ok": sum(bool(row["score"].get("preservation_ok")) for row in rows),
+        "evidence_ok": sum(bool(row["score"].get("evidence_ok")) for row in rows),
+        "scope_ok": sum(bool(row["score"].get("native_scope_ok", True)) for row in rows),
+        "harness_ok": sum(row.get("status", "completed") == "completed" for row in rows),
         "verifier_observed": sum(
             bool(row.get("verifier_observed", row["score"].get("agent_validation_observed")))
             for row in rows
@@ -114,7 +133,7 @@ def finish(fig: plt.Figure, filename: str) -> None:
 def training_curves() -> list[dict]:
     rows_out = []
     fig, ax = plt.subplots(figsize=(8.4, 4.7))
-    colors = [BLUE, ORANGE, GREEN, RED, PURPLE, "#56B4E9", "#CC79A7", GRAY, "#8C564B"]
+    colors = [BLUE, ORANGE, GREEN, RED, PURPLE, "#56B4E9", "#CC79A7", GRAY, "#8C564B", "#17BECF"]
     for color, (label, run) in zip(colors, TRAINING_RUNS.items()):
         path = ARTIFACTS / "checkpoints" / run / "metrics.jsonl"
         if not path.exists():
@@ -128,7 +147,7 @@ def training_curves() -> list[dict]:
             rows_out.append({"experiment": label, "step": step, "validation_loss": loss})
     ax.set_xlabel("Optimizer step")
     ax.set_ylabel("Assistant-token prediction loss (lower is better)")
-    ax.set_title("Training loss on the native-tool SFT trajectories")
+    ax.set_title("Training loss on the generic-tool SFT trajectories")
     ax.grid(axis="y", alpha=0.22)
     ax.legend(fontsize=7.5, ncol=2, frameon=False)
     finish(fig, "training-loss.png")
@@ -204,13 +223,14 @@ def evaluation_table() -> dict[str, dict]:
         writer.writerow([
             "experiment", "strict_passed", "tasks", "strict_pass_rate",
             "requested_state", "correct_final_config", "verifier_observed", "analysis_valid",
-            "preservation_ok", "tool_errors",
+            "preservation_ok", "evidence_ok", "scope_ok", "harness_ok", "tool_errors",
         ])
         for label, value in summaries.items():
             writer.writerow([
                 label, value["passed"], value["tasks"], value["pass_rate"],
                 value["requested_state"], value["correct_final_config"], value["verifier_observed"],
-                value["analysis_valid"], value["preservation_ok"], value["tool_errors"],
+                value["analysis_valid"], value["preservation_ok"], value["evidence_ok"],
+                value["scope_ok"], value["harness_ok"], value["tool_errors"],
             ])
     return summaries
 
@@ -251,6 +271,7 @@ def base_vs_sft(summaries: dict[str, dict]) -> None:
         ("Qwen3.5 2B", "Qwen3.5 2B · base (no SFT)", "Qwen3.5 2B · full SFT"),
         ("Qwen3.5 4B", "Qwen3.5 4B · base (no SFT)", "Qwen3.5 4B · LoRA SFT"),
         ("Qwen3.5 9B", "Qwen3.5 9B · base (no SFT)", "Qwen3.5 9B · LoRA SFT"),
+        ("Qwen3.5 27B", "Qwen3.5 27B · base (no SFT)", "Qwen3.5 27B · LoRA SFT"),
         ("Qwen3.5 35B-A3B", "Qwen3.5 35B-A3B · base (no SFT)", "Qwen3.5 35B-A3B · LoRA SFT"),
     ]
     available = [(name, base, sft) for name, base, sft in pairs if base in summaries and sft in summaries]
@@ -268,7 +289,7 @@ def base_vs_sft(summaries: dict[str, dict]) -> None:
     ax.invert_yaxis()
     ax.set_xlim(-2, 105)
     ax.set_xlabel("Strict task success on the same 36 validation tasks (%)")
-    ax.set_title("Matched comparison: effect of native-tool SFT")
+    ax.set_title("Matched comparison: effect of generic-tool SFT")
     ax.grid(axis="x", alpha=0.22)
     ax.legend(frameon=False, loc="lower right")
     for y, before, after in zip(positions, base_values, sft_values):
@@ -284,19 +305,27 @@ def base_vs_sft(summaries: dict[str, dict]) -> None:
 
 def outcome_gates(summaries: dict[str, dict]) -> None:
     labels = [label for label in (
-        "Qwen3.5 0.8B · base (no SFT)",
-        "Qwen3.5 0.8B · full SFT",
-        "Qwen3.5 0.8B · LoRA SFT",
-        "GPT-6-Astra · default low effort",
-        "GPT-5.6-Sol · default medium effort",
+        "Qwen3.5 9B · base (no SFT)",
+        "Qwen3.5 9B · LoRA SFT",
+        "Qwen3.5 27B · base (no SFT)",
+        "Qwen3.5 27B · LoRA SFT",
+        "GPT-6-Astra · medium effort",
+        "GPT-5.6-Sol · low effort",
     ) if label in summaries]
     if not labels:
         return
-    measures = ["requested_state", "analysis_valid", "preservation_ok", "correct_final_config", "verifier_observed", "passed"]
-    titles = ["Requested state", "Static validity", "Preservation", "Valid final config", "Verifier observed", "Strict pass"]
+    measures = [
+        "requested_state", "analysis_valid", "preservation_ok", "evidence_ok",
+        "correct_final_config", "scope_ok", "harness_ok", "verifier_observed", "passed",
+    ]
+    titles = [
+        "Requested\nstate", "Static\nvalidity", "Preserve\nunrelated", "Required\nevidence",
+        "Correct\nfinal file", "In\nscope", "Harness\ncompleted", "Verifier\nafter edit",
+        "Strict\nsuccess",
+    ]
     x = np.arange(len(measures))
     width = 0.8 / len(labels)
-    fig, ax = plt.subplots(figsize=(8.6, 4.7))
+    fig, ax = plt.subplots(figsize=(10.2, 4.7))
     for index, label in enumerate(labels):
         row = summaries[label]
         values = [100 * row[key] / row["tasks"] for key in measures]
@@ -310,10 +339,118 @@ def outcome_gates(summaries: dict[str, dict]) -> None:
     finish(fig, "outcome-gates.png")
 
 
+def _latex(value: object) -> str:
+    text = str(value)
+    replacements = {
+        "\\": r"\textbackslash{}", "&": r"\&", "%": r"\%", "$": r"\$",
+        "#": r"\#", "_": r"\_\allowbreak{}", "{": r"\{", "}": r"\}",
+        "~": r"\textasciitilde{}", "^": r"\textasciicircum{}",
+        ".": r".\allowbreak{}", "/": r"/\allowbreak{}", ",": r",\allowbreak{}",
+    }
+    return "".join(replacements.get(char, char) for char in text)
+
+
+def _request_summary(row: dict) -> str:
+    text = row.get("prompt", "")
+    if not text:
+        messages = row.get("messages", [])
+        users = [item.get("content", "") for item in messages if item.get("role") == "user"]
+        text = users[0] if users else ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    skip = {"Request:", "Edit analysis.config to satisfy this request:"}
+    lines = [line for line in lines if line not in skip]
+    return (lines[0] if lines else "Task request unavailable")[:180]
+
+
+def _final_config_ok(row: dict) -> bool:
+    score = row.get("score", {})
+    return (
+        bool(score.get("contract_ok"))
+        and bool(score.get("analysis_valid"))
+        and bool(score.get("preservation_ok"))
+        and bool(score.get("evidence_ok"))
+        and score.get("inputs_valid") is not False
+    )
+
+
+def _verifier_observed(row: dict) -> bool:
+    return bool(row.get("verifier_observed", row.get("score", {}).get("agent_validation_observed")))
+
+
+def failure_examples(summaries: dict[str, dict]) -> None:
+    """Write one auditable example for every observed model/failure-mode pair."""
+    modes = [
+        ("No usable edit", lambda row: not row.get("score", {}).get("contract_ok", False)
+         and int(row.get("tool_counts", row.get("native_tool_counts", {})).get("apply_patch", 0)) == 0,
+         "No successful file patch was recorded and the requested state was absent."),
+        ("Tool execution", lambda row: int(row.get("tool_errors", 0)) > 0,
+         "At least one emitted tool call could not be executed by the harness."),
+        ("Wrong requested state", lambda row: not row.get("score", {}).get("contract_ok", False),
+         "The final semantic value did not satisfy the requested change contract."),
+        ("Invalid config", lambda row: not row.get("score", {}).get("analysis_valid", False),
+         "The final file failed static TRExFitter configuration validation."),
+        ("Unrelated change", lambda row: not row.get("score", {}).get("preservation_ok", False),
+         "The agent changed or removed semantics outside the authorized task contract."),
+        ("Evidence failure", lambda row: not row.get("score", {}).get("evidence_ok", False),
+         "The task's required static or input-file evidence level was not satisfied."),
+        ("Scope violation", lambda row: row.get("score", {}).get("native_scope_ok", True) is False,
+         "The native agent attempted an operation outside the isolated one-file workspace."),
+        ("Harness failure", lambda row: row.get("status", "completed") != "completed",
+         "The model CLI timed out or exited unsuccessfully, so the trajectory was incomplete."),
+        ("Protocol-only failure", lambda row: _final_config_ok(row) and not _verifier_observed(row),
+         "The final file was correct, but no successful required verifier call was observed after the last edit."),
+    ]
+    output_rows = []
+    for label, summary in summaries.items():
+        for mode, predicate, meaning in modes:
+            candidates = [row for row in summary["rows"] if predicate(row)]
+            if not candidates:
+                continue
+            row = candidates[0]
+            reasons = row.get("score", {}).get("reasons", [])
+            observed = "; ".join(reasons[:2]) if reasons else meaning
+            if mode == "Tool execution":
+                observed = f"{row.get('tool_errors', 0)} tool error(s). {observed}"
+            output_rows.append({
+                "model": label,
+                "failure_mode": mode,
+                "task_id": row.get("task_id", "unknown"),
+                "request": _request_summary(row),
+                "observed": observed,
+            })
+
+    with (OUTPUT / "failure-examples.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["model", "failure_mode", "task_id", "request", "observed"])
+        writer.writeheader()
+        writer.writerows(output_rows)
+
+    lines = [
+        r"\scriptsize",
+        r"\begin{longtable}{p{0.15\textwidth}p{0.13\textwidth}p{0.18\textwidth}p{0.40\textwidth}}",
+        r"\toprule",
+        r"Model & Failure type & Example task & Requested change and observed reason \\",
+        r"\midrule",
+        r"\endfirsthead",
+        r"\toprule",
+        r"Model & Failure type & Example task & Requested change and observed reason \\",
+        r"\midrule",
+        r"\endhead",
+    ]
+    for row in output_rows:
+        detail = f"{row['request']} Observed: {row['observed']}"
+        lines.append(
+            f"{_latex(row['model'])} & {_latex(row['failure_mode'])} & "
+            f"{_latex(row['task_id'])} & {_latex(detail)} \\\\"
+        )
+    lines.extend([r"\bottomrule", r"\end{longtable}", r"\normalsize"])
+    (OUTPUT / "failure-examples.tex").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def category_heatmap(summaries: dict[str, dict]) -> None:
     labels = [label for label in summaries if label in (
-        "Qwen3.5 0.8B · base (no SFT)", "Qwen3.5 0.8B · full SFT",
-        "Qwen3.5 0.8B · LoRA SFT", "GPT-6-Astra · default low effort",
+        "Qwen3.5 9B · LoRA SFT", "Qwen3.5 27B · LoRA SFT",
+        "GPT-6-Astra · default low effort", "GPT-6-Astra · medium effort",
+        "GPT-5.6-Sol · low effort",
         "GPT-5.6-Sol · default medium effort",
     )]
     if not labels:
@@ -456,6 +593,7 @@ def main() -> None:
     base_vs_sft(summaries)
     outcome_gates(summaries)
     category_heatmap(summaries)
+    failure_examples(summaries)
     temperature_study()
     throughput_scaling()
     manifest = {

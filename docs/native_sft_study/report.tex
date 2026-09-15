@@ -21,7 +21,7 @@
 \newcommand{\figdir}{artifacts/reports/native-sft-study-20260914/figures}
 \newcommand{\code}[1]{\texttt{#1}}
 \title{Teaching Qwen to Edit and Verify TRExFitter Configurations\\
-\large Native-tool supervised fine-tuning study}
+\large Generic-tool supervised fine-tuning study (superseded protocol)}
 \author{ATLAS H$\rightarrow\gamma\gamma$ coding-agent project}
 \date{14 September 2026}
 
@@ -29,20 +29,33 @@
 \maketitle
 
 \begin{abstract}
-This report studies whether supervised fine-tuning (SFT) can teach small and
-mid-size Qwen models to behave as reliable coding agents for TRExFitter
-configuration work.  The target behavior is a short, auditable workflow:
+This report studies whether supervised fine-tuning (SFT) can teach Qwen models
+from 0.5B through 35B-class checkpoints to behave as reliable coding agents for TRExFitter
+configuration work under a repository-defined tool protocol.  The target behavior is a short, auditable workflow:
 understand an analyst's requested change, modify \code{analysis.config} with
 ordinary coding tools, run an independent Python verifier, and report only an
 observed result.  The public dataset contains 167 structured trajectories over
 156 logical tasks.  Every deterministic demonstration was replayed against a
 hidden oracle before admission.  Untouched public checkpoints and their SFT
-counterparts are evaluated under identical prompts, tools, decoding, turn
-limits, and held-out tasks.  The results show that SFT can teach parts of the
+counterparts were evaluated under identical custom prompts, tools, decoding,
+turn limits, and held-out tasks.  These results are retained as a diagnostic
+of that protocol, not as a fair native-agent comparison.  They show that SFT can teach parts of the
 tool protocol, but low validation loss alone does not imply reliable end-to-end
-agent behavior; the best hosted coding-agent control remains substantially
-ahead on this first 36-task benchmark.
+agent behavior; the best hosted coding-agent control remains ahead on this
+first 36-task benchmark.
 \end{abstract}
+
+\section*{Protocol validity notice}
+
+This experiment is superseded for cross-system comparison.  Qwen was driven by
+a repository-owned Python loop exposing \code{shell}, \code{read\_file},
+\code{search\_files}, and a custom \code{apply\_patch}; Codex and OpenCode were
+run through coding-agent harnesses with native editing behavior.  The custom
+patch protocol also rejected unified diffs that a normal coding agent could
+apply.  Therefore the Qwen-versus-hosted-agent numbers below must not be cited
+as a native-agent comparison.  The replacement protocol keeps the checked-in
+user prompt and external scorer fixed while running Qwen through Qwen Code's
+native \code{read\_file}, \code{edit}, and \code{run\_shell\_command} tools.
 
 \section{The problem in plain language}
 
@@ -157,7 +170,8 @@ are masked, and only observable tool behavior and final answers are learned.
 
 Training uses VERL's documented
 \href{https://verl.readthedocs.io/en/latest/examples/config.html}{SFT trainer}
-(\code{verl.trainer.sft\_trainer}), BF16, FSDP, gradient
+(\code{verl.trainer.sft\_trainer}), BF16 (a 16-bit numerical format), FSDP
+(which shards model and optimizer state across GPUs), gradient
 checkpointing, one epoch, seed 1, and assistant-only loss.  ``Full SFT'' updates
 all model parameters.  ``LoRA'' (low-rank adaptation) trains small low-rank
 matrices while leaving the original weights frozen, reducing memory and
@@ -179,6 +193,20 @@ expected because batches have different task and sequence mixtures.}
 assistant trajectories; verifier-scored execution remains the decision metric.}
 \end{figure}
 
+\textbf{Dense 27B memory sizing.}  The
+\href{https://huggingface.co/Qwen/Qwen3.5-27B}{Qwen3.5-27B} LoRA run exposed
+why a one-step smoke test is not a sufficient memory proof.  On four 40 GB
+A100s, the default allocator failed during the smoke test; expandable allocator
+segments completed that step, but the full run still exhausted memory on its
+longer fifth batch while requesting another 4.78 GB.  VERL activation offload
+was also attempted but failed before step one with an internal window-map
+error.  The smallest demonstrated complete configuration was therefore two
+nodes with four A100s each: all eight steps, full validation, and checkpointing
+completed with peak allocated/reserved memory of 23.6/25.9 GB per GPU and
+validation loss 0.11195.  This was a capacity choice, not a throughput win: its
+first step took 199.6 s versus 156.5 s in the four-GPU run because cross-node
+synchronization adds overhead.
+
 \section{Evaluation: the controlled base comparison}
 
 ``Base'' means the untouched public instruct checkpoint with no project SFT.
@@ -192,11 +220,27 @@ interaction, but share the logical tasks, initial files, allowed operations,
 verifier, and scorer; they are informative references rather than a causal
 model-only comparison.
 
-A \textbf{strict pass} requires all of the following: requested state present;
-static config validity; preservation of unrelated state; any required evidence;
-and a successful verifier call after the last patch.  The denominator is always
-36.  Error bars in the leaderboard are 95\% Wilson binomial intervals; with
-only 36 tasks they are necessarily wide.
+The held-out prompt records are pinned to the training-era validation snapshot
+with SHA-256:
+\begin{center}
+\small\texttt{3ccb0a61089e3908a8fc50a8ac59ecd0}\allowbreak
+\texttt{79d7faa09217cf7234d3a08ff235adb3}
+\end{center}
+This prevents later working-tree dataset revisions from silently changing the
+evaluation protocol.
+
+A \textbf{strict success} requires all of the following: the requested semantic
+state is present; the final config is statically valid; unrelated state is
+preserved; the task's required evidence is satisfied; no out-of-scope action is
+observed; the harness completes normally; and the exact required verifier exits
+successfully \emph{after} the last edit.  The order matters: validation before a
+later patch does not establish the final file.  A correct final file is useful
+partial progress, but it is not strict success when the agent skips or fails the
+post-edit verifier.  The denominator is always 36.  Error bars in the
+leaderboard are 95\% Wilson binomial intervals; with only 36 tasks they are
+necessarily wide.  These intervals show sampling uncertainty around a pass
+rate; they do not cover every source of uncertainty, such as the single
+training seed.
 
 \begin{figure}[ht]
 \centering
@@ -218,6 +262,7 @@ Qwen3.5-0.8B & LoRA & 0/36 & 1/36 & +2.8 pp \\
 Qwen3.5-2B & Full & 0/36 & 2/36 & +5.6 pp \\
 Qwen3.5-4B & LoRA & 0/36 & 9/36 & +25.0 pp \\
 Qwen3.5-9B & LoRA & 0/36 & 13/36 & +36.1 pp \\
+Qwen3.5-27B & LoRA & 0/36 & 26/36 & +72.2 pp \\
 Qwen3.5-35B-A3B & LoRA & 0/36 & 0/36 & 0.0 pp \\
 \bottomrule
 \end{tabular}
@@ -229,7 +274,7 @@ same public instruct checkpoint before any project SFT.}
 \centering
 \includegraphics[width=0.95\textwidth]{\figdir/strict-task-success.png}
 \caption{Verifier-backed task success.  Hosted controls are references, not a
-claim of a universal state-of-the-art ranking; their model and default effort
+claim of a universal state-of-the-art ranking; their model and effort setting
 are printed explicitly.}
 \end{figure}
 
@@ -259,16 +304,21 @@ learning rate $5\times10^{-5}$ gave 0.1200, and rank 8 at $10^{-4}$ gave
 \textbf{Scale.}  Qwen3.5-2B full SFT reached validation loss 0.0374 and improved
 strict success from 0/36 to 2/36 (5.6\%).  Qwen3.5-4B LoRA reached loss 0.0433
 and improved from 0/36 to 9/36 (25.0\%).  Qwen3.5-9B LoRA reached loss 0.0427
-and improved from 0/36 to 13/36 (36.1\%), the strongest open-weight result in
-this study.  Loss ordering therefore should not be substituted for verifier
-accuracy.  The untouched 4B and 9B checkpoints each produced ten correct final
-configs yet scored 0/36 strictly because neither completed a successful
-post-edit verifier call.  At these sizes, protocol adherence---not only text
-editing---is therefore the dominant measured failure.
+and improved from 0/36 to 13/36 (36.1\%).  Dense Qwen3.5-27B LoRA reached loss
+0.11195 and improved from 0/36 to 26/36 (72.2\%), the strongest open-weight
+result in this study.  Loss ordering therefore should not be substituted for
+verifier accuracy.  The untouched 4B and 9B checkpoints each produced ten
+correct final configs, and untouched 27B produced 14; all scored 0/36 strictly
+because none completed a successful post-edit verifier call.  The 27B LoRA
+checkpoint produced 28 correct final configs, observed successful post-edit
+verification on 29 tasks, and reduced tool-execution errors from 57 to 12.
+At these sizes, protocol adherence---not only text editing---is therefore a
+dominant measured failure.
 Because the 9B base had no wins, its 13 discordant SFT wins give a two-sided
 exact McNemar $p=0.00024$ (unadjusted for the several model comparisons).
-This supports a paired effect on this benchmark, while the single training
-seed still limits generalization.
+For 27B, 26 tasks were won only by SFT and none only by base, giving
+$p=2.98\times10^{-8}$.  These paired results support an effect on this
+benchmark, while the single training seed still limits generalization.
 
 \textbf{Largest-model result.}  Qwen3.5-35B-A3B LoRA had validation loss
 0.2105 and scored 0/36 both before and after SFT.  Correct final configurations
@@ -278,11 +328,30 @@ Thus this run provides no evidence of an SFT benefit.  It is not evidence that
 single LoRA setting, one epoch, and small dataset prevent a controlled
 parameter-scaling inference.
 
-\textbf{Hosted controls.}  Under their registry defaults, GPT-6-Astra at low
-effort scored 22/36 (61.1\%) and GPT-5.6-Sol at medium effort scored 31/36
-(86.1\%).  Effort differs and is a real confound, so the two rows should not be
-read as a pure model-generation comparison.  They demonstrate the remaining
-gap to mature hosted coding agents under the same task and verifier contract.
+\textbf{Hosted controls.}  GPT-6-Astra scored 22/36 (61.1\%) at its default
+low effort and 28/36 (77.8\%) at explicit medium effort.  The paired change had
+three tasks won only by low and nine won only by medium (two-sided exact
+McNemar $p=0.146$).  GPT-5.6-Sol scored 31/36 (86.1\%) at its default medium
+effort and 32/36 (88.9\%) at explicit low effort; two tasks were won only by
+medium and three only by low ($p=1.0$).  The official model pages enumerate
+these supported effort controls
+(\href{https://developers.openai.com/api/docs/models/gpt-6-astra}{GPT-6-Astra};
+\href{https://developers.openai.com/api/docs/models/gpt-5.6-sol}{GPT-5.6-Sol}).
+On only 36 tasks, neither paired difference is statistically resolved and more
+effort is not guaranteed to improve every trajectory.  Effort is therefore a
+measured inference setting, not a proxy for model quality; these hosted rows
+demonstrate the remaining gap under the same task and verifier contract.
+
+\textbf{Best open checkpoint versus hosted controls.}  The 27B LoRA checkpoint's
+26/36 lies above GPT-6-Astra low effort (22/36), just below GPT-6-Astra medium
+effort (28/36), and below GPT-5.6-Sol at medium and low effort (31/36 and
+32/36).  The per-task disagreements are more informative than the totals:
+against GPT-6 medium, Qwen alone passed four tasks and GPT-6 alone passed six
+($p=0.754$); against GPT-5.6 low, Qwen alone passed one and GPT-5.6 alone passed
+seven ($p=0.070$).  These paired tests do not establish a
+universal ranking, especially because Qwen used the superseded repository loop
+while the hosted agents used their native harnesses.  They do show that the
+27B SFT run closed much of the gap on this specific deterministic task set.
 
 \begin{figure}[ht]
 \centering
@@ -291,6 +360,27 @@ gap to mature hosted coding agents under the same task and verifier contract.
 ``Verifier observed'' means a successful verifier run occurred after the final
 edit; merely ending with a valid file is insufficient.}
 \end{figure}
+
+\textbf{How to read each diagnostic gate and its failure.}
+``Requested state'' asks whether the target setting or block has the requested
+semantic value; failure means the edit was absent or wrong.  ``Static validity''
+asks whether the Python checker can parse the config and accept its types and
+references; failure means the final text is malformed or internally invalid.
+``Preserve unrelated'' asks whether semantics outside the authorized change
+contract stayed unchanged; failure means collateral editing.  ``Required
+evidence'' asks whether the task-specific static or input-file checks pass;
+failure means the requested evidence level was not established.  ``Correct
+final file'' is the conjunction of those content and evidence gates.  ``In
+scope'' asks whether every observed action stayed within the isolated task
+workspace; failure means the agent attempted an unauthorized path or action.
+``Harness completed'' asks whether the model process ended normally within its
+time and turn limits; failure means the trajectory was interrupted by a timeout
+or process error.  ``Verifier after edit'' asks whether the harness observed the
+exact required command exit successfully after the final patch; failure here
+can occur even when the file is correct.  ``Strict success'' is the end-to-end
+intersection of every gate.  The early gates diagnose the file and requested
+analysis decision, while scope, harness, and verifier gates isolate failures in
+agent execution; strict success is the benchmark decision metric.
 
 \begin{figure}[ht]
 \centering
@@ -351,8 +441,8 @@ can become communication- or input-limited, so more GPUs need not be economical.
 
 The strongest positive result is behavioral: SFT moved several Qwen3.5 models
 from never completing a verifier-backed task to sometimes performing the full
-patch--verify--report protocol, with the 9B LoRA run improving from 0/36 to
-13/36.  The strongest caution is equally important: assistant-token loss can
+patch--verify--report protocol, with the 27B LoRA run improving from 0/36 to
+26/36.  The strongest caution is equally important: assistant-token loss can
 look excellent while strict task accuracy remains low, and the 35B run did not
 improve at all.  The benchmark therefore must remain executable and matched to
 an untouched base checkpoint.
@@ -364,8 +454,8 @@ stochastic seeds.  The
 35B-A3B model is a mixture-of-experts model
 (\href{https://huggingface.co/Qwen/Qwen3.5-35B-A3B}{35B total and 3B activated
 parameters according to its model card}), so its result is not a clean
-dense-model scaling point.  Hosted controls use different underlying models and default reasoning
-efforts.  No result yet tests full TRExFitter execution or histogram-level
+dense-model scaling point.  Hosted controls use different underlying models
+and reasoning efforts.  No result yet tests full TRExFitter execution or histogram-level
 semantic equivalence.  Older artifact studies used a different dataset/tool
 contract and are archived rather than merged into this leaderboard.
 
@@ -385,16 +475,42 @@ contract and are archived rather than merged into this leaderboard.
   histogram equivalence as a higher evidence level.
 \end{enumerate}
 
-\section*{Definitions}
+\appendix
+\section{Representative failure examples by model}
+
+The table below is generated directly from the per-task result records.  For
+every evaluated model and every failure type that model actually exhibited, it
+selects one concrete task and reports the scorer's observed reason.  Failure
+types may overlap---for example, a malformed edit can simultaneously miss the
+requested state and invalidate the config.  ``Protocol-only'' is deliberately
+narrower: all final-file gates passed, but the required successful post-edit
+verifier call was absent.  If a model has no row for a failure type, that type
+was not observed in its 36 tasks; this is not a claim that the model can never
+produce it.  Full trajectories remain in
+\code{artifacts/evaluation/*/results.jsonl} and their event files.
+
+\input{artifacts/reports/native-sft-study-20260914/failure-examples.tex}
+
+\section{Definitions}
 
 \begin{description}
 \item[SFT (supervised fine-tuning)] Training a model to predict demonstrated assistant actions and answers.
 \item[LoRA] A memory-efficient SFT method that learns low-rank weight updates while freezing the base weights.
 \item[Assistant-only loss] Prediction error is computed on assistant tokens; system, user, and tool-result tokens provide context but are not targets.
+\item[BF16] A compact 16-bit numerical format used here for model training.
+\item[FSDP] Fully Sharded Data Parallel, which distributes model parameters,
+gradients, and optimizer state across GPUs to reduce per-GPU memory use.
 \item[Tool call] Structured model output asking the harness to read, search, edit, or execute; the harness performs the operation and returns an observation.
 \item[Verifier] Independent Python code that parses the config, checks the requested contract and preservation, and returns explicit evidence.
-\item[Strict pass] Correct requested edit, valid and preserved config, plus a successful verifier invocation after the last patch.
+\item[Strict success] Correct requested edit, valid and preserved config,
+required evidence, in-scope and normally completed harness behavior, plus a
+successful verifier invocation after the last patch.
 \item[Validation loss] Token-prediction error on trajectories excluded from weight updates; it is not executed-task accuracy.
+\item[Exact McNemar test] A paired test that uses tasks where only one of two
+systems succeeds.  Its $p$-value measures how surprising that imbalance would
+be if neither system had a systematic advantage.
+\item[Wilson interval] A binomial uncertainty interval around the observed pass
+rate; it is more reliable than a simple symmetric error bar for small samples.
 \item[Hosted control] A reference run from a hosted coding agent evaluated on the same task contract; it is not automatically a universal SOTA claim.
 \item[Tokens/s] Here, non-padding SFT sequence tokens processed per wall-clock second across all GPUs.
 \end{description}

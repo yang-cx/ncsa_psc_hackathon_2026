@@ -104,6 +104,41 @@ SAVE_DIR=/workspace/artifacts/checkpoints/verl-qwen35-0.8b-lora-r16-lr1e4-e1 \
 bash training/scripts/run_verl_sft.sh
 ```
 
+The dense Qwen3.5-27B study uses the same data, LoRA rank/alpha, learning
+rate, global batch, sequence limit, and one-epoch schedule.  Four 40 GB A100s
+are not sufficient for the full dataset at this context length in the tested
+VERL configuration.  The default allocator fragmented at 38.4 GB in a smoke
+test; expandable segments completed that short test, but a longer sequence at
+step five of the full run still exhausted memory.  VERL activation offload was
+also tested, but failed before the first step with an internal activation
+window-map error for this model.  The completed full run therefore uses two
+nodes with four A100s each:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+MASTER_ADDR="$(scontrol show hostnames "$SLURM_JOB_NODELIST" | head -n 1)" \
+MODEL_PATH=/hf_cache/hub/models--Qwen--Qwen3.5-27B/snapshots/<revision> \
+NNODES=2 \
+NPROC_PER_NODE=4 \
+TRAIN_BATCH_SIZE=16 \
+MICRO_BATCH_SIZE_PER_GPU=1 \
+MAX_LENGTH=12288 \
+LR=1e-4 \
+TOTAL_EPOCHS=1 \
+USE_PEFT=1 \
+LORA_RANK=16 \
+LORA_ALPHA=16 \
+SAVE_DIR=/workspace/artifacts/checkpoints/verl-qwen35-27b-lora-r16-lr1e-4-e1 \
+srun --nodes=2 --ntasks=2 --ntasks-per-node=1 \
+  bash training/scripts/run_verl_sft_slurm_worker.sh
+```
+
+The completed study run wrote eight optimizer steps and an end-of-epoch
+validation loss of `0.1119495630` to
+`artifacts/checkpoints/verl-qwen35-27b-lora-r16-lr1e-4-e1/metrics.jsonl`.
+Its raw VERL checkpoint is `global_step_8`; the merged Hugging Face export and
+LoRA adapter are under that checkpoint's `huggingface/` directory.
+
 Set `USE_PEFT=0` for full-parameter SFT. Important study controls include
 `LR`, `TRAIN_BATCH_SIZE`, `TOTAL_EPOCHS`, `LORA_RANK`, and `LORA_ALPHA`.
 Use identical data, seed, context length, and evaluation tasks when changing
@@ -117,6 +152,12 @@ The launcher:
 - evaluates and checkpoints after each epoch by default;
 - writes step metrics to `$SAVE_DIR/metrics.jsonl` through VERL's file logger;
 - supports one-step smoke tests with `TOTAL_TRAINING_STEPS=1`.
+
+Hydra's resolved configuration and per-rank logs are retained under
+`artifacts/logs/hydra/<experiment>/<run-id>/rank-<rank>/` instead of the
+repository-level `outputs/` default. Slurm launches use the job and step IDs to
+group ranks from the same run. Set `HYDRA_RUN_ID` to give a run a stable custom
+identifier, or `HYDRA_LOG_ROOT` to relocate this metadata explicitly.
 
 For a strong-scaling point, use `run_verl_throughput_point.sh` with a fresh
 `SAVE_DIR`. It timestamps VERL's per-step token counts, excludes the first
@@ -143,6 +184,13 @@ run in an isolated workspace with the four generic tools, and final accuracy
 comes from the independent config/task verifier—not from matching generated
 text. Record syntax validity, edit success, verifier success, semantic task
 success, unauthorized changes, latency, and token counts.
+
+On the pinned 36-task validation snapshot, the completed 27B LoRA checkpoint
+passed 26 tasks strictly, versus 0 for the untouched base. It produced 28
+correct final configs and 29 successful post-edit verifier observations; the
+base produced 14 correct final configs but no successful post-edit verifier
+observation. Evaluation summaries record the exact prompt SHA-256, generation
+limits, decoding settings, and seed.
 
 ## Relation to RL
 

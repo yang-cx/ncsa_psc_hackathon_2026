@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -39,6 +40,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--base-model", help="Required for an adapter that does not identify its base")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET)
+    parser.add_argument(
+        "--prompt-jsonl", type=Path,
+        help="Optional immutable main-agent prompt snapshot; defaults to DATASET_ROOT/data/main-agent/SPLIT.jsonl",
+    )
     parser.add_argument("--split", choices=("train", "validation"), default="validation")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", choices=("auto", "cuda", "cpu"), default="auto")
@@ -60,8 +65,10 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
-def prompt_rows(dataset_root: Path, split: str) -> dict[str, dict[str, Any]]:
-    path = dataset_root / f"data/main-agent/{split}.jsonl"
+def prompt_rows(
+    dataset_root: Path, split: str, prompt_jsonl: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    path = prompt_jsonl.resolve() if prompt_jsonl is not None else dataset_root / f"data/main-agent/{split}.jsonl"
     rows = [row for row in read_jsonl(path) if row.get("modality") == "deterministic_generic_tools"]
     result = {row["logical_task_id"]: row for row in rows}
     if len(result) != len(rows):
@@ -192,7 +199,7 @@ def main() -> None:
         raise ValueError("invalid generation limit or temperature")
 
     dataset_root = args.dataset_root.resolve()
-    prompts = prompt_rows(dataset_root, args.split)
+    prompts = prompt_rows(dataset_root, args.split, args.prompt_jsonl)
     tasks = [task for task in scoreable_tasks(dataset_root) if task["split"] == args.split]
     if args.task_id:
         wanted = set(args.task_id)
@@ -305,13 +312,24 @@ def main() -> None:
             "verifier_observed": verifier_observed, "tool_errors": tool_errors,
         }))
 
+    prompt_path = (
+        args.prompt_jsonl.resolve()
+        if args.prompt_jsonl is not None
+        else dataset_root / f"data/main-agent/{args.split}.jsonl"
+    )
     metadata = {
         "schema_version": "trexfitter-native-qwen-evaluation/v1",
         "source_dataset": "cxyang-ucb/hyy-sft",
+        "dataset_root": str(dataset_root),
+        "prompt_jsonl": str(prompt_path),
+        "prompt_sha256": hashlib.sha256(prompt_path.read_bytes()).hexdigest(),
         "checkpoint": resolved,
         "device": device,
         "split": args.split,
+        "max_turns": args.max_turns,
+        "max_new_tokens": args.max_new_tokens,
         "temperature": args.temperature,
+        "top_p": args.top_p,
         "seed": args.seed,
     }
     summary = summarize(results, metadata)
