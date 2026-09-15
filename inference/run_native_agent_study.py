@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate TRExFitter tasks with native Codex or OpenCode tools.
+"""Evaluate TRExFitter tasks through each model family's native coding agent.
 
 This is an experiment harness, not a model-facing tool.  It gives each coding
 agent an isolated workspace containing ``analysis.config``, records the CLI's
@@ -38,16 +38,29 @@ VALIDATOR_COMMAND = re.compile(
     r"(?:\s+--check-inputs)?(?:\s+--evidence-level(?:=|\s+)[SIC])?\s*$"
 )
 MACHINE_PATH = re.compile(r"(?<![A-Za-z0-9])/(?:global|pscratch|home|tmp)/")
+QWEN_STUDY_SYSTEM = (
+    "You are Qwen Code editing a scientific-analysis repository rooted at /workspace. Use only "
+    "the provided native file and shell tools. Make minimal changes, preserve unrelated settings, run the "
+    "requested local validation command, and report only evidence actually observed."
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--harness", required=True, choices=("codex", "opencode"))
+    parser.add_argument("--harness", required=True, choices=("codex", "opencode", "qwen"))
     parser.add_argument("--split", default="validation", choices=("train", "validation"),
                         help="Public test contracts are sealed and cannot be scored by this checkout")
     parser.add_argument("--dataset-root", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--model", required=True, help="Explicit native CLI model name for reproducibility")
+    parser.add_argument(
+        "--qwen-base-url",
+        help="OpenAI-compatible Qwen endpoint, for example http://localhost:8000/v1",
+    )
+    parser.add_argument(
+        "--qwen-max-output-tokens", type=int, default=4096,
+        help="Fixed Qwen Code per-turn output reservation (default: 4096)",
+    )
     parser.add_argument(
         "--reasoning-effort", choices=("low", "medium", "high", "xhigh"),
         help="Codex reasoning effort; recorded in the study manifest (Codex only)",
@@ -151,6 +164,7 @@ def cli_command(
     prompt: str,
     model: str | None,
     reasoning_effort: str | None = None,
+    qwen_base_url: str | None = None,
 ) -> list[str]:
     workspace = workspace.resolve()
     if harness == "codex":
@@ -166,22 +180,81 @@ def cli_command(
         return [*command, prompt]
     if reasoning_effort:
         raise ValueError("--reasoning-effort is supported only by the Codex harness")
-    command = ["opencode", "run", "--pure", "--format", "json", "--dir", str(workspace)]
-    if model:
-        command.extend(("--model", model))
-    return [*command, prompt]
+    if harness == "opencode":
+        command = ["opencode", "run", "--pure", "--format", "json", "--dir", str(workspace)]
+        if model:
+            command.extend(("--model", model))
+        return [*command, prompt]
+    if harness == "qwen":
+        # Qwen Code owns the tool descriptions, call parser, execution loop,
+        # and tool-result messages.  The allowlist names only Qwen Code's
+        # built-ins; no repository-defined patch function is exposed.
+        runtime_system = QWEN_STUDY_SYSTEM.replace("/workspace", str(workspace))
+        command = [
+            "qwen",
+            "--bare",
+            "--auth-type", "openai",
+            # Workspaces contain one copied config and are discarded after
+            # scoring, so native YOLO approval cannot affect source data.
+            "--approval-mode", "yolo",
+            "--system-prompt", runtime_system,
+            "--core-tools", ",".join((
+                "read_file", "edit",
+                "run_shell_command(python -m trex_fitter.config_verify)",
+                "run_shell_command(python3 -m trex_fitter.config_verify)",
+                "run_shell_command(sed)", "run_shell_command(rg)",
+                "run_shell_command(grep)", "run_shell_command(head)",
+                "run_shell_command(tail)", "run_shell_command(wc)",
+                "run_shell_command(find)", "run_shell_command(git diff)",
+                "run_shell_command(git status)",
+            )),
+            "--exclude-tools", "get_goal,update_goal,notebook_edit",
+            "--allowed-tools", ",".join((
+                "Read", "Edit(/analysis.config)",
+                "Bash(python -m trex_fitter.config_verify)",
+                "Bash(python3 -m trex_fitter.config_verify)",
+                "Bash(sed *)", "Bash(rg *)", "Bash(grep *)", "Bash(head *)",
+                "Bash(tail *)", "Bash(wc *)", "Bash(find *)",
+                "Bash(git diff *)", "Bash(git status *)",
+            )),
+            "--max-session-turns", "20",
+            "--max-tool-calls", "50",
+            "--output-format", "stream-json",
+        ]
+        if model:
+            command.extend(("--model", model))
+        if qwen_base_url:
+            command.extend(("--openai-base-url", qwen_base_url))
+        return [*command, "--prompt", prompt]
+    raise ValueError(f"unsupported native harness: {harness}")
 
 
-def safe_environment() -> dict[str, str]:
+def safe_environment(harness: str, qwen_max_output_tokens: int = 4096) -> dict[str, str]:
     env = os.environ.copy()
     venv_bin = PROJECT_ROOT / ".venv/bin"
     env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
     previous = env.get("PYTHONPATH")
     env["PYTHONPATH"] = f"{PROJECT_ROOT}:{previous}" if previous else str(PROJECT_ROOT)
+    if harness == "qwen":
+        # Local vLLM/Ollama endpoints normally require a syntactically present
+        # key even when they do not authenticate it.
+        env.setdefault("OPENAI_API_KEY", "not-needed")
+        # Qwen Code otherwise reserves the model's full declared 32k output
+        # budget. Self-hosted servers correctly reject prompt + 32k when it
+        # exceeds their context window, before the model can emit a token.
+        env["QWEN_CODE_MAX_OUTPUT_TOKENS"] = str(qwen_max_output_tokens)
     return env
 
 
 def parse_events(stdout: str) -> list[dict[str, Any]]:
+    try:
+        value = json.loads(stdout)
+    except json.JSONDecodeError:
+        value = None
+    if isinstance(value, list):
+        return [event for event in value if isinstance(event, dict)]
+    if isinstance(value, dict):
+        return [value]
     events = []
     for line in stdout.splitlines():
         try:
@@ -191,6 +264,41 @@ def parse_events(stdout: str) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             events.append(value)
     return events
+
+
+def qwen_tool_records(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Join Qwen Code tool_use blocks to their native tool_result blocks."""
+    results: dict[str, tuple[int, dict[str, Any]]] = {}
+    for index, event in enumerate(events):
+        if event.get("type") != "user":
+            continue
+        for block in (event.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                results[str(block.get("tool_use_id", ""))] = (index, block)
+
+    records = []
+    for index, event in enumerate(events):
+        if event.get("type") != "assistant":
+            continue
+        for block in (event.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            call_id = str(block.get("id", ""))
+            result_index, result = results.get(call_id, (-1, {}))
+            records.append({
+                "call_index": index,
+                "result_index": result_index,
+                "id": call_id,
+                "name": str(block.get("name", "")),
+                "input": block.get("input") or {},
+                "result": result,
+            })
+    return records
+
+
+def qwen_call_succeeded(record: dict[str, Any]) -> bool:
+    result = record.get("result") or {}
+    return bool(result) and result.get("is_error") is not True
 
 
 def inner_shell_command(command: str) -> str:
@@ -245,6 +353,25 @@ def observed_agent_validation(
                 and is_required_validator_command(command, check_inputs=check_inputs)
             ):
                 verifier_indices.append(index)
+    if harness == "qwen":
+        for record in qwen_tool_records(events):
+            name = record["name"]
+            arguments = record["input"]
+            completed_index = record["result_index"]
+            if name == "edit" and qwen_call_succeeded(record):
+                edit_indices.append(completed_index)
+            if (
+                name == "run_shell_command"
+                and qwen_call_succeeded(record)
+                # Foreground execution is Qwen Code's native default; models
+                # may therefore omit this optional schema property.
+                and arguments.get("is_background", False) is False
+                and is_required_validator_command(
+                    str(arguments.get("command", "")), check_inputs=check_inputs
+                )
+                and "VALID:" in str((record.get("result") or {}).get("content", ""))
+            ):
+                verifier_indices.append(completed_index)
     if not verifier_indices:
         return False
     return not edit_indices or max(verifier_indices) > max(edit_indices)
@@ -294,6 +421,36 @@ def native_scope_violations(
                 value = arguments.get(key)
                 if isinstance(value, str) and _outside_workspace(value, workspace):
                     violations.add(f"{tool} referenced a path outside the task workspace")
+    if harness == "qwen":
+        allowed = {"read_file", "edit", "run_shell_command"}
+        for record in qwen_tool_records(events):
+            tool = record["name"]
+            arguments = record["input"]
+            if tool not in allowed:
+                violations.add(f"forbidden native tool used: {tool}")
+            if not qwen_call_succeeded(record):
+                # Keep failed calls as recovery evidence. They did not read,
+                # modify, or execute anything, so their malformed arguments
+                # are protocol errors rather than workspace escapes.
+                continue
+            if tool == "run_shell_command":
+                command = str(arguments.get("command", ""))
+                if MACHINE_PATH.search(command) or re.search(r"(?:^|\s)\.\.(?:/|\s|$)", command):
+                    violations.add("shell command referenced a path outside the task workspace")
+            for key in ("file_path", "path", "directory"):
+                value = arguments.get(key)
+                if isinstance(value, str) and _outside_workspace(value, workspace):
+                    violations.add(f"{tool} referenced a path outside the task workspace")
+            if tool == "edit":
+                path_value = arguments.get("file_path")
+                # A schema-invalid empty path is a recoverable tool error, not
+                # an attempt to touch another file. Preserve it in the trace
+                # as recovery supervision while still rejecting real targets.
+                if isinstance(path_value, str) and path_value:
+                    target = Path(path_value)
+                    resolved = target.resolve() if target.is_absolute() else (workspace / target).resolve()
+                    if resolved != workspace / "analysis.config":
+                        violations.add("edit targeted a file other than analysis.config")
     return sorted(violations)
 
 
@@ -312,6 +469,8 @@ def native_tool_counts(harness: str, events: list[dict[str, Any]]) -> dict[str, 
             tool = part.get("tool")
             if tool and (part.get("state", {}).get("status") in {"completed", "error"} or event.get("type") == "tool"):
                 counts[str(tool)] += 1
+    if harness == "qwen":
+        counts.update(record["name"] for record in qwen_tool_records(events) if record["name"])
     return dict(sorted(counts.items()))
 
 
@@ -400,6 +559,10 @@ def main() -> None:
         raise ValueError("--limit must be positive")
     if args.timeout < 1:
         raise ValueError("--timeout must be positive")
+    if args.qwen_max_output_tokens < 1:
+        raise ValueError("--qwen-max-output-tokens must be positive")
+    if args.harness == "qwen" and not (args.qwen_base_url or os.environ.get("OPENAI_BASE_URL")):
+        raise ValueError("--qwen-base-url or OPENAI_BASE_URL is required for the Qwen native harness")
 
     dataset_root = args.dataset_root.resolve()
     tasks = [row for row in scoreable_tasks(dataset_root) if row["split"] == args.split]
@@ -428,6 +591,8 @@ def main() -> None:
         "harness_version": version,
         "model": args.model,
         "reasoning_effort": args.reasoning_effort,
+        "qwen_base_url": args.qwen_base_url or os.environ.get("OPENAI_BASE_URL"),
+        "qwen_max_output_tokens": args.qwen_max_output_tokens if args.harness == "qwen" else None,
         "split": args.split,
         "timeout_seconds": args.timeout,
         "dry_run": args.dry_run,
@@ -458,13 +623,16 @@ def main() -> None:
                 prompt = native_prompt_for(dataset_root, args.split, task_id)
                 record["prompt"] = prompt
                 command = cli_command(
-                    args.harness, workspace, prompt, args.model, args.reasoning_effort
+                    args.harness, workspace, prompt, args.model, args.reasoning_effort,
+                    args.qwen_base_url,
                 )
                 started = time.perf_counter()
                 try:
                     process = subprocess.run(
                         command, text=True, capture_output=True, timeout=args.timeout,
-                        cwd=workspace, env=safe_environment(), check=False,
+                        cwd=workspace,
+                        env=safe_environment(args.harness, args.qwen_max_output_tokens),
+                        check=False,
                     )
                     record["status"] = "completed" if process.returncode == 0 else "cli_error"
                     record["returncode"] = process.returncode

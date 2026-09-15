@@ -1,9 +1,10 @@
-# Qwen coding-agent tool contract (v1)
+# Native coding-agent tool contracts
 
-The model-facing contract is independent of the trajectory-collection harness.
-Codex and OpenCode are samplers, not separate SFT modalities. Their raw event
-streams remain immutable provenance and are normalized into one semantic
-record before training Qwen3.5.
+The user task and external scorer are harness-independent. The model-facing
+tool contract is not: Codex uses Codex tools, OpenCode uses OpenCode tools, and
+Qwen3.5 is trained and evaluated with Qwen Code's native tools. Raw teacher
+events remain immutable provenance and are translated into Qwen Code calls
+only when constructing Qwen SFT examples.
 
 ## Qwen training representation
 
@@ -23,22 +24,21 @@ tool calls are supervised, but proprietary hidden reasoning from a sampling
 model is never treated as a Qwen reasoning trace. A thinking-mode study needs
 separately generated, reviewed Qwen-compatible `reasoning_content`.
 
-## Canonical generic tools
+## Qwen Code native tools
 
-Every TRExFitter coding-agent row exposes the same small tool manifest:
+Every Qwen TRExFitter coding-agent row exposes this small subset of Qwen Code:
 
 | Tool | Purpose |
 | --- | --- |
-| `shell` | Run a command in the isolated task workspace. |
-| `read_file` | Read a workspace-relative file, optionally with an offset and limit. |
-| `search_files` | Search contents, path globs, or a directory. |
-| `apply_patch` | Apply a bounded patch to an allowlisted workspace file. |
+| `read_file` | Read a file with Qwen Code's `file_path`, `offset`, and `limit` arguments. |
+| `edit` | Replace `old_string` with `new_string` in `file_path`. |
+| `run_shell_command` | Run a command with the required `is_background` decision. |
 
-These names are our versioned application interface; Qwen itself does not
-mandate function names. They are deliberately generic coding operations, not
-TRExFitter APIs. `config_verify` and the TRExFitter runner are ordinary shell
-commands, not model-facing functions. No MCP server, `list_blocks`,
-`search_settings`, `read_config`, or `verify_config` is exposed.
+These are Qwen Code function names and argument shapes, not repository-owned
+aliases. Tool descriptions may change with the pinned Qwen Code release; the
+checkpoint chat template renders the structured calls. `config_verify` remains
+an ordinary shell command. No MCP server or TRExFitter-specific function is
+exposed.
 
 ## Source-harness adapters
 
@@ -47,18 +47,17 @@ envelope. Observable results are retained from the raw event stream.
 
 | Source event | Canonical Qwen call |
 | --- | --- |
-| Codex `command_execution` | `shell` |
-| Codex `file_change` | `apply_patch` reconstructed from the verified before/after files |
-| OpenCode `bash` | `shell` |
+| Codex `command_execution` | `run_shell_command` |
+| Codex `file_change` | `edit` reconstructed from the verified before/after files |
+| OpenCode `bash` | `run_shell_command` |
 | OpenCode `read` | `read_file` |
-| OpenCode `glob`, `grep`, or `list` | `search_files` with an explicit mode |
-| OpenCode `edit` or `apply_patch` | `apply_patch` |
+| OpenCode `glob`, `grep`, or `list` | bounded `run_shell_command` inspection |
+| OpenCode `edit` | `edit` |
 
-At inference, a harness adapter performs the reverse mapping: it parses
-Qwen3.5's output through the checkpoint-supported Qwen tool parser, validates
-the canonical JSON arguments, and invokes the corresponding native harness
-operation. The trained model therefore sees one protocol even when deployed
-behind different harnesses.
+At inference there is no reverse-mapping adapter. Qwen Code sends its own tool
+schemas to the OpenAI-compatible endpoint, parses the model's native calls,
+executes them, and emits native tool-result messages. Codex and OpenCode are
+run separately through their own CLIs with the exact same user prompt.
 
 ## Sandbox and acceptance rules
 
@@ -73,6 +72,6 @@ behind different harnesses.
   scorer verifies the requested semantic change, unrelated-setting
   preservation, and required config evidence.
 - Raw source events and their hashes are retained. The export records every
-  normalization, including a reconstructed Codex patch.
+  normalization, including a reconstructed Codex exact-replacement edit.
 - Train, validation, and test are split by `logical_task_id`, never by sampler
   or trajectory variant.

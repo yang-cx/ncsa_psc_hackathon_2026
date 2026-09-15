@@ -24,15 +24,16 @@ Use the same held-out tasks to compare three groups:
 | Strong reference models | Available state-of-the-art models, tested without training on our data |
 
 For every model, report results separately for each dataset family and
-modality: Qwen agent and direct config. Deployment may additionally be broken
-down by Codex and OpenCode adapter. Do not use any held-out task, or any of its
+modality: native coding agent and direct config. Use Qwen Code for Qwen,
+Codex for Codex models, and OpenCode for its configured models, while keeping
+the user prompt and scorer fixed. Do not use any held-out task, or any of its
 trajectory variants, during training.
 
 ## What the training data needs
 
-The dataset builder turns each reviewed task into model-neutral conversational
-JSONL. Agent records include the user request, generic
-tools, tool calls and their results, and the final answer. The selected Qwen
+The dataset builder turns each reviewed task into semantic conversational
+JSONL. Qwen agent records include the user request, Qwen Code-native tools,
+tool calls and their results, and the final answer. The selected Qwen
 checkpoint tokenizer renders the native control tokens. A direct-config record
 includes
 a human-readable user request and one assistant answer containing only the
@@ -53,7 +54,7 @@ For each run, save the model name and size, resolved model/tokenizer revision,
 chat-template hash, installed VERL/Transformers
 versions, dataset version, training command,
 and test results. For each test task, save whether an agent output has valid
-Qwen tool syntax, whether its harness adapter executed it, and, for config
+native tool syntax, whether its own harness executed it, and, for config
 tasks in every modality, whether the TRExFitter config is valid and runs when
 required. Validate a direct response
 by inserting the snippet into its documented template.

@@ -25,7 +25,7 @@ An agentic record contains:
 - tool-result turns that refer to their call ID; and
 - a concise final assistant answer, or a justified no-action answer.
 
-Every agentic record carries the single, versioned Qwen tool manifest defined in [TOOL_CONTRACT.md](TOOL_CONTRACT.md). The canonical task declares required capabilities—`read`, `modify`, and `execute`—and the SFT exporter represents them as `shell`, `read_file`, `search_files`, and `apply_patch`. Codex and OpenCode names are normalized at the dataset boundary and retained only in raw provenance. Do not train on invented tool output or a hidden verifier result.
+Every Qwen agentic record carries the versioned Qwen Code tool manifest defined in [TOOL_CONTRACT.md](TOOL_CONTRACT.md). The task declares required capabilities—`read`, `modify`, and `execute`—and Qwen SFT represents them as `read_file`, `edit`, and `run_shell_command`. Codex and OpenCode names remain native during evaluation and are translated only when their verified runs are used as Qwen teacher provenance. Do not train on invented tool output or a hidden verifier result.
 
 The direct `direct_config` modality is not an abbreviated agent transcript. Its prompt states the physics goal, supported config subset, constraints, and necessary local context. Its assistant target contains only the reviewed, self-contained config snippet: no tools, diff fences, explanation, or verifier output. The `messages` field uses the same typed chat structure as agent rows and `tools` is an empty list (`[]`). A consumer can insert the snippet at the documented location in a config template.
 
@@ -38,11 +38,11 @@ Author and review one canonical config task, then render it two ways:
 | `logical_task_id` | source task ID | same source task ID |
 | `modality` | `coding_agent` | `direct_config` |
 | `capabilities` | `read` / `modify` / `execute` | `[]` |
-| `tools` | generic four-tool manifest | omitted or `[]` |
+| `tools` | Qwen Code-native three-tool manifest | omitted or `[]` |
 | `messages` | OpenAI-style semantic tool trajectory | natural-language request followed by one config-only answer |
 | split, fixture revision, config verification | preserved | preserved |
 
-The target checkpoint tokenizer owns protocol-specific tokens and message-template details. Do not put literal Qwen XML, Codex wrappers, OpenCode wrappers, token IDs, or loss masks in the semantic source record. Candidate source traces can differ, but after normalization they expose the same generic tool manifest and must reach the same reviewed final state. Multiple accepted trajectories for one task are variants, not independent examples; balance and split by `logical_task_id`, never by sampler or rendered row ID.
+The target checkpoint tokenizer owns protocol-specific tokens and message-template details. Do not put literal Qwen XML, Codex wrappers, OpenCode wrappers, token IDs, or loss masks in the semantic source record. Qwen training rows use the Qwen Code-native manifest and must reach the same reviewed final state. Multiple accepted trajectories for one task are variants, not independent examples; balance and split by `logical_task_id`, never by sampler or rendered row ID.
 
 Before publishing an agent trajectory, replay or externally verify its source run against the fixture, normalize it to the canonical contract, and preflight it through the exact target Qwen checkpoint tokenizer. Before publishing a direct renderer, insert its target snippet into the documented fixture/template and run the config verifier. Store source-harness, source-model, tokenizer revision, and prompt-template provenance.
 
@@ -56,11 +56,11 @@ logical_task_id     ID shared by all renderings of one authored task
 dataset_family      trex_config | root_io | open_data | trex_execution | ...
 modality            coding_agent | direct_config
 source_harness      codex | opencode | generated | none (provenance only)
-tool_contract       canonical-code-tools/v1 | none
+tool_contract       qwen-code-native-tools/v1 | none
 capabilities         subset of read, modify, execute; [] for direct_config
 split               train | validation | test
 messages             typed chat/tool trajectory
-tools                optional structured generic tool manifest
+tools                optional structured Qwen Code tool manifest
 fixture              immutable input/environment revision
 verification         verifier name, status, and non-secret evidence
 provenance           source, authoring/review, and renderer metadata
@@ -78,7 +78,7 @@ physics goal + starting .config file + diagnostic
                  bounded agent repair episode
 ```
 
-Start with `data/configs/examples/hyy.config`, our working H→γγ config. A repair task declares `read`, `modify`, and `execute` capabilities. Every Qwen rendering exposes the same canonical generic tools. Source harnesses invoke task-provided validation, TRExFitter, and result-inspection commands only in the sandbox; the exporter maps their calls to the canonical contract. The model should use supplied tools rather than emit an out-of-band patch answer.
+Start with `data/configs/examples/hyy.config`, our working H→γγ config. A repair task declares `read`, `modify`, and `execute` capabilities. Every Qwen rendering exposes the same Qwen Code-native tools. Source harnesses invoke task-provided validation, TRExFitter, and result-inspection commands only in the sandbox; the exporter maps verified teacher calls to the Qwen Code contract. The model should use supplied tools rather than emit an out-of-band patch answer.
 
 For every supported repair or synthesis task, also create the direct rendering. Phrase its request for a human, provide only necessary local context, and target the smallest valid config block—not a patch or the complete fixture file.
 
@@ -100,7 +100,7 @@ These tasks teach more than local value replacement. The agent must:
 2. identify the appropriate TRExFitter block syntax and reusable patterns;
 3. synthesize all required settings from the prose and local evidence;
 4. edit only `analysis.config`; and
-5. run the ordinary config-verification command through `shell`.
+5. run the ordinary config-verification command through `run_shell_command`.
 
 The current development catalogue covers Fit, Region, Sample, and NormFactor
 blocks. Region tasks exercise structured selection reconstruction; Sample
@@ -174,4 +174,4 @@ complexity.
 
 Keep reviewed source records as JSON and publish generated, versioned dataset splits to the Hub. Do not hand-edit Parquet. A dataset README must name its family, source schema, Qwen checkpoint/tokenizer revisions, source-harness adapter versions, direct prompt-template version, tool manifest revision, fixture revision, split policy, verifier, and intended use.
 
-The merge step takes selected released family versions, validates that their common columns and modality contracts are compatible, checks every model-facing tool manifest against `canonical-code-tools/v1`, balances families and modalities deliberately, and writes a manifest of every source dataset and revision. It retains family, `logical_task_id`, modality, source harness, capabilities, split, provenance, and verification fields so contamination checks and per-family evaluation remain possible. Model, tokenizer, template, and package revisions belong to each training-run manifest rather than the canonical rows.
+The merge step takes selected released family versions, validates that their common columns and modality contracts are compatible, checks every Qwen model-facing tool manifest against `qwen-code-native-tools/v1`, balances families and modalities deliberately, and writes a manifest of every source dataset and revision. It retains family, `logical_task_id`, modality, source harness, capabilities, split, provenance, and verification fields so contamination checks and per-family evaluation remain possible. Model, tokenizer, template, and package revisions belong to each training-run manifest rather than the semantic rows.

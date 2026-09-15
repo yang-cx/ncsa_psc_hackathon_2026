@@ -16,7 +16,15 @@ TRExFitter data is split by role:
 | [`samples/examples/`](samples/examples/) | Shared TRExFitter example samples. |
 | [`samples/hyy/`](samples/hyy/) | Large H→γγ `Data/` and `MC/` ROOT inputs, which are not versioned. |
 
-`configs/` is the first of several small dataset families. Each supported config task is rendered as a Codex agent episode, an OpenCode agent episode, and a direct natural-language-to-config example for the prompt endpoint. The direct target is only an insertable config snippet and has an empty `tools` list. Other families will cover ROOT-file work, ATLAS Open Data knowledge, TRExFitter execution, and fit-result interpretation. Each family owns small reviewed source-task records, fixtures, and a verifier; family releases are later combined into a separate long-horizon dataset.
+`configs/` is the first of several small dataset families. Verified Codex and
+OpenCode runs may provide teacher provenance, but the active Hyy SFT release
+normalizes accepted trajectories into a Qwen Code view. A separate direct
+natural-language-to-config modality may use an insertable config snippet with
+an empty `tools` list; it is not part of the current main-agent mixture. Other
+families will cover ROOT-file work, ATLAS Open Data knowledge, TRExFitter
+execution, and fit-result interpretation. Each family owns small reviewed
+source-task records, fixtures, and a verifier; family releases are later
+combined into a separate long-horizon dataset.
 
 The first starting config is `configs/examples/hyy.config`. It is a working H→γγ TRExFitter config and should be the base for our first example tasks.
 
@@ -26,7 +34,11 @@ For now, `configs/examples/` contains only runnable TRExFitter configs. Task
 records, schemas, and generated training splits are maintained separately and
 are not part of this repository layout.
 
-All agentic records use the v1 [native-tool contract](../docs/TOOL_CONTRACT.md). Do not create one-off tools, MCP servers, or custom wrappers for individual dataset families.
+The Hyy Qwen training view uses the
+[`qwen-code-native-tools/v1`](../docs/TOOL_CONTRACT.md) contract. Native Codex
+and OpenCode evaluations use their own harness interfaces while keeping the
+user task and external scorer fixed. Do not create one-off domain tools, MCP
+servers, or custom wrappers for individual dataset families.
 
 ## Dataset publishing convention
 
@@ -63,8 +75,8 @@ The current native-tool TRExFitter trajectory release is the public Hugging
 Face dataset [`cxyang-ucb/hyy-sft`](https://huggingface.co/datasets/cxyang-ucb/hyy-sft).
 It is registered as a Git submodule, matching
 `data/datasets/root-sft-dataset`, so the parent repository can pin an exact
-dataset revision. Its dataset card documents the replay gate, splits, generic
-tool contract, and Parquet loading interface.
+dataset revision. Its dataset card documents the replay gate, splits, Qwen
+Code-native three-tool contract, and Parquet loading interface.
 
 ```bash
 git submodule update --init \

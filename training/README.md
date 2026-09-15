@@ -5,15 +5,17 @@ The active supervised-training path uses VERL's
 checkpoint, and data ecosystem intended for the later reinforcement-learning
 stage.
 
-The canonical dataset remains model-neutral JSONL containing structured
-`messages` plus optional OpenAI-style `tools`. No Qwen markup, token IDs,
-labels, or loss masks are stored in the dataset.
+The audited source remains structured JSONL containing `messages` plus
+OpenAI-style `tools`; Parquet is the training transport. The active
+`main-agent-replay-approved` configuration is specifically the Qwen Code SFT
+view, not a universal native-agent tool contract. No Qwen markup, token IDs,
+labels, or loss masks are stored in either representation.
 
 ## Data boundary
 
 The active public dataset is
 [`cxyang-ucb/hyy-sft`](https://huggingface.co/datasets/cxyang-ucb/hyy-sft).
-It contains 129 replay-approved training trajectories and 38 validation
+It contains 130 replay-approved training trajectories and 39 validation
 trajectories. The public default is a verified Parquet mirror; JSONL remains
 the canonical audited source.
 
@@ -26,10 +28,18 @@ python training/prepare_verl_sft.py \
   --output-dir artifacts/native-sft/verl/main-agent-approved
 ```
 
-The local Parquet materialization JSON-encodes only heterogeneous Arrow leaves
-(`tools` and tool-call arguments). `training/verl_dataset.py` restores those
-objects before tokenization. It also requires exactly the generic
-`shell`, `read_file`, `search_files`, and `apply_patch` contract.
+The current public Parquet files preserve nested `messages` and `tools` and
+round-trip those fields against the audited JSONL. A VERL transport may
+JSON-encode heterogeneous Arrow leaves; the dataset adapter must restore them
+before tokenization. The active Qwen Code view exposes exactly `read_file`,
+`edit`, and `run_shell_command` under `qwen-code-native-tools/v1`.
+Their complete definitions are the checked-in capture of the official
+`@qwen-code/qwen-code` 0.23.4 OpenAI request, not repository-authored
+approximations.
+
+The checked-in `training/verl_dataset.py` adapter rejects the superseded
+four-tool snapshot and requires the three-tool Qwen Code contract before any
+row reaches tokenization.
 
 ## Template and loss-mask gate
 
@@ -43,13 +53,13 @@ Before training, run both splits through the exact tokenizer and VERL dataset:
 python training/preflight_verl_sft.py \
   --input artifacts/native-sft/verl/main-agent-approved/train.parquet \
   --model /path/to/pinned/qwen/snapshot \
-  --max-length 12288 \
+  --max-length 16384 \
   --report artifacts/native-sft/verl/main-agent-approved/train-preflight.json
 
 python training/preflight_verl_sft.py \
   --input artifacts/native-sft/verl/main-agent-approved/validation.parquet \
   --model /path/to/pinned/qwen/snapshot \
-  --max-length 12288 \
+  --max-length 16384 \
   --report artifacts/native-sft/verl/main-agent-approved/validation-preflight.json
 ```
 
@@ -63,10 +73,10 @@ The gate iterates every row and fails unless:
 - the tool schema and tool-call/result graph are valid;
 - thinking is disabled consistently.
 
-For Qwen3.5-0.8B at revision
-`2fc06364715b967f1860aea9cf38778875588b17`, the current maximum is 10,335
-tokens in train and 8,158 in validation, so the study uses a 12,288-token hard
-limit.
+The previously recorded 10,335-token train maximum and 8,158-token validation
+maximum were measured on the superseded four-tool snapshot. Re-run both
+preflights with the current Parquet and exact target checkpoint before choosing
+the context limit for a new experiment.
 
 ## Container and environment
 
@@ -180,17 +190,21 @@ checkpoint tokenizer/config are saved with every checkpoint. Use
 required by an inference runtime.
 
 Evaluate base and trained models on the same held-out task IDs. Each task must
-run in an isolated workspace with the four generic tools, and final accuracy
-comes from the independent config/task verifier—not from matching generated
-text. Record syntax validity, edit success, verifier success, semantic task
-success, unauthorized changes, latency, and token counts.
+run in an isolated workspace through the target agent's native harness. Qwen
+runs use Qwen Code's `read_file`, `edit`, and `run_shell_command`; Codex and
+OpenCode runs retain their own native interfaces. Final accuracy comes from
+the same independent config/task verifier—not from matching generated text.
+Record syntax validity, edit success, verifier success, semantic task success,
+unauthorized changes, latency, and token counts.
 
-On the pinned 36-task validation snapshot, the completed 27B LoRA checkpoint
-passed 26 tasks strictly, versus 0 for the untouched base. It produced 28
-correct final configs and 29 successful post-edit verifier observations; the
-base produced 14 correct final configs but no successful post-edit verifier
-observation. Evaluation summaries record the exact prompt SHA-256, generation
-limits, decoding settings, and seed.
+### Superseded four-tool study
+
+The completed 27B LoRA result—26 strict passes versus 0 for the untouched
+base—used the earlier `canonical-code-tools/v1` dataset, not the current Qwen
+Code Parquet. It must not be reported as evidence for the new protocol. New
+results require retraining from the current dataset and must record its exact
+Parquet SHA-256, tokenizer/template revision, generation limits, decoding
+settings, and seed.
 
 ## Relation to RL
 

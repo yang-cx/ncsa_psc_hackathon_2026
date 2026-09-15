@@ -22,29 +22,30 @@ checkboxes until someone takes them.
 
 - [ ] Choose the first small part of the TRExFitter config language to support.
 - [ ] Make simple config tasks: a physics goal, a starting config, a known good answer, and broken examples.
+- [x] Add single-block reconstruction development tasks: remove one Fit, Region, Sample, or NormFactor block, describe it in natural language, and score restoration plus preservation. Keep the final reconstruction test on a private alternate fixture.
 - [ ] Make small tasks for running TRExFitter and reading its results.
 - [ ] Keep training, validation, and final test tasks separate from the start.
 - [ ] Find a faster way to histogram data: evaluate a new backend and already-histogrammed input data.
 
-## 2. Make one output format, three modalities, and two verifiers
+## 2. Use Qwen Code tools, two modalities, and two verifiers
 
 | Owners | Status | Task |
 | --- | --- | --- |
 | Joshua, Chengxi | ⚪ | Agree on one basic record format for every dataset: task ID, dataset name, modality, split, starting files, available tools, tool calls and their results when agentic, final config snippet when direct, and check result. |
 
-- [ ] From each supported config task, make a Codex-agent version, an OpenCode-agent version, and a direct natural-language-to-config version. Give all three the same logical task ID and keep them in the same split.
-- [ ] Configure and test the v1 [native-tool contract](TOOL_CONTRACT.md) before authoring tool-use episodes: Codex uses `Bash`/`apply_patch`; OpenCode uses its native file and bash tools. No MCP or custom tool wrapper.
+- [ ] From each supported config task, make a Qwen-agent version and a direct natural-language-to-config version. Keep every source trajectory with the same logical task ID and split.
+- [x] Configure and test the [native tool contracts](TOOL_CONTRACT.md): Qwen Code-native functions, Qwen checkpoint chat-template rendering, and native Codex/OpenCode comparisons. No MCP or domain-specific wrapper.
 - [ ] Define the direct-config prompt template and snippet insertion context. Its target must contain only a valid config snippet and its `tools` value must be `[]`.
-- [ ] Build a verifier that checks whether the model's tool-use output has valid Codex and OpenCode syntax.
+- [ ] Build a verifier that checks the canonical semantic record and its exact Qwen checkpoint rendering.
 - [ ] Build a verifier that checks whether a TRExFitter config is valid and can run when needed, including a direct snippet after insertion into its documented template. Save a clear pass/fail result, error message, time limit, log, and—when applicable—significance.
-- [ ] Test both verifiers and all three output modalities on a few known good and bad tasks before publishing data.
+- [ ] Test both verifiers and both output modalities on a few known good and bad tasks before publishing data.
 
 ## 3. Release, join, and train datasets
 
 | Owner | Status | Task |
 | --- | --- | --- |
 | Joshua | ⚪ | Convert the checked records into the files verl needs and provide one simple training command for Qwen 1.5B and Qwen 7B. |
-| Joshua | ⚪ | Compare untrained Qwen 0.8B/9B, trained Qwen 0.8B/9B, and strong reference models on held-out tasks. Report success separately for each dataset and modality: Codex agent, OpenCode agent, and direct config. |
+| Joshua | ⚪ | Compare untrained Qwen 0.8B/9B, trained Qwen 0.8B/9B, and strong reference models on held-out tasks. Report Qwen-agent and direct-config results, plus Codex/OpenCode adapter results where deployed. |
 
 - [ ] Release each checked one-turn dataset separately.
 - [ ] Join released datasets into a separate long task: read a ROOT file → write a config → run TRExFitter → explain the result. Keep the source dataset and split recorded for every step.

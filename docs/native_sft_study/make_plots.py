@@ -424,25 +424,120 @@ def failure_examples(summaries: dict[str, dict]) -> None:
         writer.writeheader()
         writer.writerows(output_rows)
 
-    lines = [
-        r"\scriptsize",
-        r"\begin{longtable}{p{0.15\textwidth}p{0.13\textwidth}p{0.18\textwidth}p{0.40\textwidth}}",
-        r"\toprule",
-        r"Model & Failure type & Example task & Requested change and observed reason \\",
-        r"\midrule",
-        r"\endfirsthead",
-        r"\toprule",
-        r"Model & Failure type & Example task & Requested change and observed reason \\",
-        r"\midrule",
-        r"\endhead",
+    base_labels = [
+        label for label in EVALUATION_RUNS
+        if label.startswith("Qwen")
+        and "base (no SFT)" in label
+        and label in summaries
     ]
-    for row in output_rows:
-        detail = f"{row['request']} Observed: {row['observed']}"
+    base_rows = [row for label in base_labels for row in summaries[label]["rows"]]
+    total_tasks = len(base_rows)
+    requested_state = sum(bool(row["score"].get("contract_ok")) for row in base_rows)
+    correct_final = sum(_final_config_ok(row) for row in base_rows)
+    invalid_config = sum(not bool(row["score"].get("analysis_valid")) for row in base_rows)
+    evidence_failure = sum(not bool(row["score"].get("evidence_ok")) for row in base_rows)
+    unrelated_change = sum(not bool(row["score"].get("preservation_ok")) for row in base_rows)
+    tool_error_tasks = sum(int(row.get("tool_errors", 0)) > 0 for row in base_rows)
+    tool_errors = sum(int(row.get("tool_errors", 0)) for row in base_rows)
+    tool_calls = sum(
+        sum(row.get("tool_counts", row.get("native_tool_counts", {})).values())
+        for row in base_rows
+    )
+    verifier_observed = sum(_verifier_observed(row) for row in base_rows)
+    strict_passes = sum(
+        bool(row.get("passed", row["score"].get("passed") and _verifier_observed(row)))
+        for row in base_rows
+    )
+
+    lines = [
+        r"\paragraph{Qwen base-model failure summary (superseded four-tool evaluator).}",
+        (
+            f"Across seven untouched Qwen checkpoints, the old evaluator recorded "
+            f"{strict_passes}/{total_tasks} strict passes. This does not mean that every "
+            f"configuration edit was wrong: {requested_state}/{total_tasks} reached the "
+            f"requested state and {correct_final}/{total_tasks} produced a fully correct "
+            f"final configuration. All {correct_final} otherwise-correct files failed the "
+            f"strict agent gate because successful required validation after the final "
+            f"edit was observed on only {verifier_observed}/{total_tasks} tasks."
+        ),
+        "",
+        r"\begin{center}",
+        r"\begin{tabular}{lrrrrr}",
+        r"\toprule",
+        r"Base checkpoint & Requested state & Correct file & Tool-error tasks & Verifier & Strict \\",
+        r"\midrule",
+    ]
+    for label in base_labels:
+        summary = summaries[label]
+        rows = summary["rows"]
+        error_tasks = sum(int(row.get("tool_errors", 0)) > 0 for row in rows)
         lines.append(
-            f"{_latex(row['model'])} & {_latex(row['failure_mode'])} & "
-            f"{_latex(row['task_id'])} & {_latex(detail)} \\\\"
+            f"{_latex(label.replace(' · base (no SFT)', ''))} & "
+            f"{summary['requested_state']}/{summary['tasks']} & "
+            f"{summary['correct_final_config']}/{summary['tasks']} & "
+            f"{error_tasks}/{summary['tasks']} & "
+            f"{summary['verifier_observed']}/{summary['tasks']} & "
+            f"{summary['passed']}/{summary['tasks']} \\\\"
         )
-    lines.extend([r"\bottomrule", r"\end{longtable}", r"\normalsize"])
+    lines.extend([
+        r"\midrule",
+        (
+            f"All Qwen bases & {requested_state}/{total_tasks} & "
+            f"{correct_final}/{total_tasks} & {tool_error_tasks}/{total_tasks} & "
+            f"{verifier_observed}/{total_tasks} & {strict_passes}/{total_tasks} \\\\"
+        ),
+        r"\bottomrule",
+        r"\end{tabular}",
+        r"\end{center}",
+        "",
+        (
+            f"The failure gates overlap. The final file missed the requested state on "
+            f"{total_tasks - requested_state}/{total_tasks} tasks, failed static validation "
+            f"on {invalid_config}/{total_tasks}, failed required evidence on "
+            f"{evidence_failure}/{total_tasks}, and changed unrelated semantics on "
+            f"{unrelated_change}/{total_tasks}. The harness recorded {tool_errors} failed "
+            f"executions among {tool_calls} parsed tool calls, affecting "
+            f"{tool_error_tasks}/{total_tasks} tasks."
+        ),
+        "",
+        r"\textbf{Concrete protocol failure.} On "
+        r"\code{hyy-traj-fit\_controls-fit-minos-muh}, untouched Qwen3.5-27B "
+        r"read the file and emitted a conventional unified diff that made the correct "
+        r"change. The repository-defined \code{apply\_patch} tool rejected it with "
+        r"\code{invalid patch boundary}. The model recovered with \code{sed}, yielding a "
+        r"fully correct final configuration, but used its fourth and final tool turn for "
+        r"\code{grep} rather than the required Python verifier. The strict score was "
+        r"therefore zero for that task despite the correct edit. This custom-tool and "
+        r"four-turn interaction is why the table diagnoses the old evaluator, not native "
+        r"Qwen Code capability.",
+        "",
+        r"\paragraph{Representative failures by model and gate.}",
+        r"\scriptsize",
+    ])
+    rows_by_model: dict[str, list[dict]] = defaultdict(list)
+    for row in output_rows:
+        rows_by_model[row["model"]].append(row)
+    for model, model_rows in rows_by_model.items():
+        lines.extend([
+            r"\medskip",
+            rf"\noindent\textbf{{{_latex(model)}}}",
+            r"\begin{longtable}{p{0.13\textwidth}p{0.18\textwidth}p{0.27\textwidth}p{0.32\textwidth}}",
+            r"\toprule",
+            r"Failure type & Example task & Requested change & Observed \\",
+            r"\midrule",
+            r"\endfirsthead",
+            r"\toprule",
+            r"Failure type & Example task & Requested change & Observed \\",
+            r"\midrule",
+            r"\endhead",
+        ])
+        for row in model_rows:
+            lines.append(
+                f"{_latex(row['failure_mode'])} & {_latex(row['task_id'])} & "
+                f"{_latex(row['request'])} & {_latex(row['observed'])} \\\\"
+            )
+        lines.extend([r"\bottomrule", r"\end{longtable}"])
+    lines.append(r"\normalsize")
     (OUTPUT / "failure-examples.tex").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

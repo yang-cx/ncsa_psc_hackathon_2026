@@ -44,7 +44,7 @@ def test_native_task_renderings_cover_current_tasks_without_domain_tools():
         assert {row["modality"] for row in split_rows} == {"coding_agent"}
         assert all("target_model_family" not in row for row in split_rows)
         assert all("target_chat_template" not in row for row in split_rows)
-        assert {row["tool_contract"] for row in split_rows} == {"canonical-code-tools/v1"}
+        assert {row["tool_contract"] for row in split_rows} == {"native-agent-protocol/v1"}
         assert all(row["native_tool_policy"]["custom_tools"] is False for row in split_rows)
         assert all(not (forbidden & set(json.dumps(row).split())) for row in split_rows)
         assert not any(name in json.dumps(split_rows) for name in forbidden)
@@ -142,6 +142,37 @@ def test_cli_command_places_codex_global_approval_before_exec(tmp_path):
     assert 'model_reasoning_effort="low"' in command
 
 
+def test_cli_command_uses_qwen_code_native_tools_and_headless_protocol(tmp_path):
+    command = RUNNER.cli_command(
+        "qwen", tmp_path, "same user prompt", "Qwen/Qwen3.5-9B", None,
+        "http://localhost:8000/v1",
+    )
+    assert command[0:2] == ["qwen", "--bare"]
+    assert command[command.index("--output-format") + 1] == "stream-json"
+    assert command[command.index("--auth-type") + 1] == "openai"
+    assert command[command.index("--approval-mode") + 1] == "yolo"
+    runtime_system = command[command.index("--system-prompt") + 1]
+    assert str(tmp_path.resolve()) in runtime_system
+    assert "/workspace" not in runtime_system
+    assert command[command.index("--model") + 1] == "Qwen/Qwen3.5-9B"
+    assert command[command.index("--openai-base-url") + 1] == "http://localhost:8000/v1"
+    assert command[command.index("--exclude-tools") + 1] == "get_goal,update_goal,notebook_edit"
+    assert command[-2:] == ["--prompt", "same user prompt"]
+    core_tools = command[command.index("--core-tools") + 1]
+    assert "read_file" in core_tools
+    assert "edit" in core_tools
+    assert "run_shell_command(python -m trex_fitter.config_verify)" in core_tools
+    assert "apply_patch" not in core_tools
+    env = RUNNER.safe_environment("qwen", qwen_max_output_tokens=4096)
+    assert env["QWEN_CODE_MAX_OUTPUT_TOKENS"] == "4096"
+
+
+def test_parse_events_accepts_qwen_buffered_json_and_stream_json():
+    events = [{"type": "system"}, {"type": "result", "subtype": "success"}]
+    assert RUNNER.parse_events(json.dumps(events)) == events
+    assert RUNNER.parse_events("\n".join(json.dumps(event) for event in events)) == events
+
+
 def test_materialized_workspace_is_an_isolated_git_repository(tmp_path):
     task = next(row for row in RUNNER.scoreable_tasks(DATASET) if row["split"] == "train")
     workspace = tmp_path / "task"
@@ -196,6 +227,30 @@ def test_native_event_gate_requires_successful_exact_python_verifier():
     }]
     assert RUNNER.observed_agent_validation("opencode", opencode, check_inputs=True)
 
+    qwen = [
+        {
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use", "id": "verify-1", "name": "run_shell_command",
+                "input": {
+                    "command": "python -m trex_fitter.config_verify analysis.config --actions n",
+                    "is_background": False,
+                },
+            }]},
+        },
+        {
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result", "tool_use_id": "verify-1", "is_error": False,
+                "content": "Command: ...\nExit Code: 0\nVALID: analysis.config",
+            }]},
+        },
+    ]
+    assert RUNNER.observed_agent_validation("qwen", qwen, check_inputs=False)
+    assert RUNNER.native_tool_counts("qwen", qwen) == {"run_shell_command": 1}
+    qwen[1]["message"]["content"][0]["is_error"] = True
+    assert not RUNNER.observed_agent_validation("qwen", qwen, check_inputs=False)
+
     verifier_then_edit = [
         {
             "type": "item.completed",
@@ -236,8 +291,35 @@ def test_native_scope_gate_rejects_parent_reads_and_allows_workspace_paths(tmp_p
         "shell command referenced a path outside the task workspace"
     ]
 
+    qwen = [
+        {
+            "type": "assistant",
+            "message": {"content": [{
+                "type": "tool_use", "id": "edit-1", "name": "edit",
+                "input": {
+                    "file_path": str(workspace / "analysis.config"),
+                    "old_string": "old", "new_string": "new",
+                },
+            }]},
+        },
+        {
+            "type": "user",
+            "message": {"content": [{
+                "type": "tool_result", "tool_use_id": "edit-1", "is_error": False,
+                "content": "Successfully modified file",
+            }]},
+        },
+    ]
+    assert RUNNER.native_scope_violations("qwen", qwen, workspace) == []
+    qwen[0]["message"]["content"][0]["input"]["file_path"] = str(workspace / "other.txt")
+    assert RUNNER.native_scope_violations("qwen", qwen, workspace) == [
+        "edit targeted a file other than analysis.config"
+    ]
+    qwen[1]["message"]["content"][0]["is_error"] = True
+    assert RUNNER.native_scope_violations("qwen", qwen, workspace) == []
 
-def test_codex_events_normalize_to_canonical_native_tools(tmp_path):
+
+def test_codex_events_normalize_to_qwen_code_native_tools(tmp_path):
     before = tmp_path / "before.config"
     after = tmp_path / "after.config"
     before.write_text('Fit: "fit"\n%  UseMinos: mu_H\n')
@@ -256,16 +338,20 @@ def test_codex_events_normalize_to_canonical_native_tools(tmp_path):
         },
     ]
     messages, tools, note = EXPORT.codex_messages(events, before, after)
-    assert tools == {"shell", "apply_patch"}
+    assert tools == {"run_shell_command", "edit"}
     assert [call["function"]["name"] for message in messages for call in message.get("tool_calls", [])] == [
-        "shell", "apply_patch"
+        "run_shell_command", "edit"
     ]
-    assert messages[-1]["content"] == "Validated analysis.config:2."
+    assert messages[-1]["content"] == "Validated /workspace/analysis.config:2."
+    edit = messages[2]["tool_calls"][0]["function"]["arguments"]
+    assert edit["file_path"] == "/workspace/analysis.config"
+    assert edit["old_string"] == "%  UseMinos: mu_H\n"
+    assert edit["new_string"] == "  UseMinos: mu_H\n"
     assert str(tmp_path) not in json.dumps(messages)
     assert "reconstructed" in note
 
 
-def test_opencode_events_map_to_canonical_qwen_tools_and_remove_absolute_paths(tmp_path):
+def test_opencode_events_map_to_qwen_code_tools_and_remove_absolute_paths(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     config = workspace / "analysis.config"
@@ -281,18 +367,65 @@ def test_opencode_events_map_to_canonical_qwen_tools_and_remove_absolute_paths(t
         },
     }
     messages, tools, _ = EXPORT.opencode_messages([event, {"type": "text", "part": {"text": "Done."}}], workspace)
-    assert tools == {"apply_patch"}
+    assert tools == {"edit"}
     function = messages[0]["tool_calls"][0]["function"]
-    assert function["name"] == "apply_patch"
-    assert "*** Update File: analysis.config" in function["arguments"]["patch"]
+    assert function["name"] == "edit"
+    assert function["arguments"] == {
+        "file_path": "/workspace/analysis.config",
+        "old_string": "old", "new_string": "new", "replace_all": False,
+    }
     assert str(tmp_path) not in json.dumps(messages)
     assert messages[-1]["content"] == "Done."
 
 
-def test_export_contract_has_one_model_neutral_tool_manifest_without_artifact_dependency():
-    expected = ["shell", "read_file", "search_files", "apply_patch"]
+def test_qwen_events_preserve_native_recovery_and_remove_thinking(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    config = workspace / "analysis.config"
+    events = [
+        {
+            "type": "assistant", "message": {"content": [
+                {"type": "thinking", "thinking": "hidden"},
+                {"type": "tool_use", "id": "bad", "name": "read_file",
+                 "input": {"file_path": "/workspace/analysis.config"}},
+            ]},
+        },
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "bad", "is_error": True,
+             "content": "File not found"},
+        ]}},
+        {
+            "type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Retrying. "},
+                {"type": "tool_use", "id": "good", "name": "read_file",
+                 "input": {"file_path": str(config)}},
+            ]},
+        },
+        {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "good", "is_error": False,
+             "content": f"read {config}"},
+        ]}},
+        {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "Validation passed."},
+        ]}},
+    ]
+    messages, tools, note, kind = EXPORT.qwen_messages(events, workspace)
+    assert tools == {"read_file"}
+    assert kind == "recovery"
+    assert "hidden" not in json.dumps(messages)
+    assert str(tmp_path) not in json.dumps(messages)
+    assert messages[2]["tool_calls"][0]["function"]["arguments"]["file_path"] == "/workspace/analysis.config"
+    assert "native calls" in note
+
+
+def test_export_contract_has_qwen_code_native_tool_manifest_without_artifact_dependency():
+    expected = ["read_file", "edit", "run_shell_command"]
     tools = [EXPORT.TOOL_SCHEMAS[name] for name in EXPORT.CANONICAL_TOOL_NAMES]
     assert [tool["function"]["name"] for tool in tools] == expected
+    assert EXPORT._tool_snapshot["qwen_code_package"] == "@qwen-code/qwen-code"
+    assert EXPORT._tool_snapshot["qwen_code_version"] == "0.23.4"
+    assert "pages" in EXPORT.TOOL_SCHEMAS["read_file"]["function"]["parameters"]["properties"]
+    assert EXPORT.TOOL_SCHEMAS["run_shell_command"]["function"]["parameters"]["required"] == ["command"]
     row = {
         "uuid": "synthetic-contract-check",
         "messages": [
@@ -303,14 +436,14 @@ def test_export_contract_has_one_model_neutral_tool_manifest_without_artifact_de
                 "content": "I will inspect it.",
                 "tool_calls": [{
                     "id": "call-1", "type": "function",
-                    "function": {"name": "read_file", "arguments": {"path": "analysis.config"}},
+                    "function": {"name": "read_file", "arguments": {"file_path": "/workspace/analysis.config"}},
                 }],
             },
             {"role": "tool", "content": "Job: hyy", "tool_call_id": "call-1"},
             {"role": "assistant", "content": "The config was inspected."},
         ],
         "tools": tools,
-        "tool_contract": "canonical-code-tools/v1",
+        "tool_contract": "qwen-code-native-tools/v1",
     }
     PREFLIGHT.semantic_check(row)
     assert "target_model_family" not in row
@@ -360,8 +493,8 @@ def test_native_export_row_contains_no_model_tokens_or_authored_loss_mask(tmp_pa
         "source_dataset": EXPORT.ACTIVE_SOURCE_DATASET,
     }
     row = EXPORT.render(study, record, metadata)
-    assert row["schema_version"] == "hyy-trexfitter-native-trajectory/v0.6"
-    assert row["tool_contract"] == "canonical-code-tools/v1"
+    assert row["schema_version"] == "hyy-trexfitter-native-trajectory/v0.7"
+    assert row["tool_contract"] == "qwen-code-native-tools/v1"
     assert "target_model_family" not in row
     assert "target_chat_template" not in row
     assert "assistant_loss_mask" not in row
@@ -375,8 +508,9 @@ def test_native_export_rejects_verifier_that_precedes_final_edit(tmp_path):
             "role": "assistant", "content": "Validating.",
             "tool_calls": [{
                 "id": "verify", "type": "function", "function": {
-                    "name": "shell", "arguments": {
-                        "command": "python -m trex_fitter.config_verify analysis.config --actions n"
+                    "name": "run_shell_command", "arguments": {
+                        "command": "python -m trex_fitter.config_verify analysis.config --actions n",
+                        "is_background": False,
                     },
                 },
             }],
@@ -386,7 +520,10 @@ def test_native_export_rejects_verifier_that_precedes_final_edit(tmp_path):
             "role": "assistant", "content": "One more edit.",
             "tool_calls": [{
                 "id": "patch", "type": "function", "function": {
-                    "name": "apply_patch", "arguments": {"patch": "*** Begin Patch"},
+                    "name": "edit", "arguments": {
+                        "file_path": "/workspace/analysis.config",
+                        "old_string": "old", "new_string": "new",
+                    },
                 },
             }],
         },

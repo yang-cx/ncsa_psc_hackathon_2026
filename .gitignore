@@ -3,8 +3,13 @@ __pycache__/
 *.pyc
 .venv/
 
+# Notebook autosaves and scratch checkpoints
+.ipynb_checkpoints/
+/Untitled.ipynb
+
 # Generated artifacts
 artifacts/
+/outputs/
 data/samples/hyy/Data/
 data/samples/hyy/MC/
 trex_fitter/test/
@@ -13,6 +18,9 @@ data/reference/hep-signature-backgrounds/
 data/atlas_opendata/
 data/configs/generated/
 data/configs/splits/
+
+# Generated payload for the static trajectory viewer
+site/trexfitter-trajectories/data.js
 
 # Local ROOT scratch files
 .asetup.save

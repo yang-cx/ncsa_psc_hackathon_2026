@@ -53,6 +53,15 @@ LORA_ALPHA="${LORA_ALPHA:-16}"
 LORA_TARGETS="${LORA_TARGETS:-[\"q_proj\",\"k_proj\",\"v_proj\",\"o_proj\",\"gate_proj\",\"up_proj\",\"down_proj\"]}"
 LORA_MERGE="${LORA_MERGE:-True}"
 REWARD_NUM_WORKERS="${REWARD_NUM_WORKERS:-8}"
+HYDRA_LOG_ROOT="${HYDRA_LOG_ROOT:-$REPO_ROOT/artifacts/logs/hydra}"
+if [[ -z "${HYDRA_RUN_ID:-}" ]]; then
+  if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    HYDRA_RUN_ID="${SLURM_JOB_ID}-${SLURM_STEP_ID:-batch}"
+  else
+    HYDRA_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  fi
+fi
+HYDRA_RUN_DIR="$HYDRA_LOG_ROOT/$EXPERIMENT_NAME/$HYDRA_RUN_ID/rank-\${oc.env:RANK,0}"
 
 export HYDRA_FULL_ERROR="${HYDRA_FULL_ERROR:-1}"
 
@@ -152,5 +161,8 @@ uv run --frozen --extra fsdp --extra sglang python -m verl.trainer.main_ppo \
   trainer.save_freq="$SAVE_FREQ" \
   trainer.test_freq="$TEST_FREQ" \
   trainer.total_epochs="$TOTAL_EPOCHS" \
+  hydra.run.dir="$HYDRA_RUN_DIR" \
+  hydra.output_subdir=.hydra \
+  hydra.job.chdir=false \
   "${EXTRA_OVERRIDES[@]}" \
   "$@"

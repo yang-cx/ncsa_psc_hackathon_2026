@@ -37,6 +37,17 @@ RESUME_MODE="${RESUME_MODE:-disable}"
 TEST_FREQ="${TEST_FREQ:-after_each_epoch}"
 SAVE_FREQ="${SAVE_FREQ:-after_each_epoch}"
 METRICS_FILE="${METRICS_FILE:-$SAVE_DIR/metrics.jsonl}"
+HYDRA_LOG_ROOT="${HYDRA_LOG_ROOT:-$REPO_ROOT/artifacts/logs/hydra}"
+if [[ -z "${HYDRA_RUN_ID:-}" ]]; then
+  if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    HYDRA_RUN_ID="${SLURM_JOB_ID}-${SLURM_STEP_ID:-batch}"
+  else
+    HYDRA_RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  fi
+fi
+# Hydra runs once per torchrun worker. Keep each rank's resolved config and log
+# separate while grouping all ranks from one launch beneath the same run ID.
+HYDRA_RUN_DIR="$HYDRA_LOG_ROOT/$EXPERIMENT_NAME/$HYDRA_RUN_ID/rank-\${oc.env:RANK,0}"
 
 if [[ ! -x "$PYTHON" ]]; then
   echo "Missing VERL SFT environment at $PYTHON" >&2
@@ -124,4 +135,7 @@ exec "$PYTHON" -m torch.distributed.run "${launcher[@]}" \
   "trainer.test_freq=$TEST_FREQ" \
   "trainer.save_freq=$SAVE_FREQ" \
   "trainer.resume_mode=$RESUME_MODE" \
+  "hydra.run.dir=$HYDRA_RUN_DIR" \
+  hydra.output_subdir=.hydra \
+  hydra.job.chdir=false \
   "${model_args[@]}" "$@"

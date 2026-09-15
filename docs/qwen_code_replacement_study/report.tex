@@ -1,0 +1,175 @@
+\documentclass[10.5pt]{article}
+\usepackage[margin=0.74in]{geometry}
+\usepackage{booktabs,graphicx,hyperref,xcolor,enumitem,tabularx,microtype,fontspec}
+\setmainfont{TeX Gyre Heros}
+\hypersetup{colorlinks=true,urlcolor=blue!55!black,linkcolor=blue!55!black}
+\setlist{nosep,leftmargin=1.35em}
+\setlength{\parskip}{0.42em}
+\setlength{\parindent}{0pt}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\figdir}{artifacts/reports/qwen-code-replacement-study-20260915/figures}
+\title{Native Qwen Code SFT Replacement Study\\\large An end-to-end pilot with an independent TRExFitter scorer}
+\author{ATLAS H$\rightarrow\gamma\gamma$ coding-agent project}
+\date{15 September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This pilot replaces the earlier repository-specific Qwen tool loop with Qwen
+Code 0.23.4 itself.  Canonical training rows remain structured conversations;
+the Qwen tokenizer renders its own function-call tokens.  A Qwen3.5-4B model
+was trained for one epoch with LoRA on four A100 GPUs and evaluated beside the
+unchanged base checkpoint on the same six held-out tasks.  Base scored 3/6 and
+SFT scored 2/6 under the strict external gate.  Thus this run validates the
+replacement plumbing but does not establish an SFT accuracy improvement.
+\end{abstract}
+
+\section{Question and workflow}
+The practical question is whether a general coding model can translate a
+physicist's request into a small, correct change to \code{analysis.config},
+preserve unrelated analysis choices, run the specified Python verifier, and
+truthfully report the observed result.  The model is a reasoning-capable Qwen
+checkpoint, but hidden chain-of-thought is neither stored nor supervised:
+training and data rendering consistently set \code{enable\_thinking=False}.
+
+The replacement protocol is:
+\begin{enumerate}
+  \item Qwen Code exposes exactly \code{read\_file}, \code{edit}, and
+        \code{run\_shell\_command}; the JSON schemas are captured from the
+        official \code{@qwen-code/qwen-code} 0.23.4 request and pinned.
+  \item Qwen Code parses calls, applies edits in a disposable task workspace,
+        runs shell commands, and returns native tool results to the model.
+  \item An independent repository scorer inspects the final file and event
+        stream.  It is not available to the model as a special-purpose tool.
+\end{enumerate}
+The short study system prompt restricts work to the task workspace and asks for
+minimal edits plus the exact verifier command.  The same prompt, decoding
+endpoint, six tasks, 4,096-token output limit, and scorer are used for base and
+SFT.  Qwen Code runs in \code{yolo} approval mode only because every task uses
+an isolated disposable copy.
+
+\section{Dataset and rendering}
+The refreshed public release has 130 train and 39 validation conversations:
+156 replay-approved deterministic demonstrations, 11 real Codex/OpenCode
+teacher trajectories, and two externally accepted Qwen Code trajectories.
+The Qwen additions are one clean validation success and one training recovery
+(failed no-side-effect calls followed by a correct edit and verifier run).
+They were collected after this checkpoint was trained and therefore are not
+part of its supervision.  The evaluated checkpoint used the immediately prior
+129-train/38-validation Qwen Code-native snapshot; the two new native rows are
+for the next training round.
+Records store structured \code{messages}, optional \code{tools}, provenance,
+and verification evidence---not rendered markup, hidden reasoning, token IDs,
+or labels.  The target checkpoint's chat template creates model-specific
+tokens at training time.  Preflight proved identical full and turn-wise
+rendering, assistant-only loss masks, no-thinking behavior, and no truncation
+at the 16,384-token context length.
+
+\section{Training}
+VERL's SFT trainer ran Qwen3.5-4B for one epoch: LoRA rank 16 and alpha 16,
+learning rate $10^{-4}$, BF16, global batch 8, seed 1, four A100 GPUs, and 16
+optimizer steps.  LoRA trains small low-rank updates while leaving base weights
+frozen.  Peak allocated GPU memory was 24.65~GB per rank (33.74~GB reserved).
+The adapter was reconstructed from VERL's sharded checkpoint and merged only
+for native serving.
+
+\begin{figure}[ht]
+\centering\includegraphics[width=.82\textwidth]{\figdir/training-loss.pdf}
+\caption{Prediction loss over the single training epoch.  The endpoint is low,
+but loss measures imitation of held-out conversations, not successful execution.}
+\end{figure}
+
+Training loss fell from 0.375 to 0.056; held-out assistant-token loss was
+0.079.  These values show that the model learned the demonstration distribution.
+They do not prove that it learned robust tool selection, editing, and recovery.
+
+\section{Matched result}
+\begin{figure}[ht]
+\centering\includegraphics[width=.72\textwidth]{\figdir/matched-strict-success.pdf}
+\caption{Strict end-to-end success on the same six held-out tasks.  Six tasks
+are a smoke test, not a statistically precise benchmark.}
+\end{figure}
+
+Base Qwen3.5-4B passed 3/6 (50\%); the one-epoch LoRA checkpoint passed 2/6
+(33\%).  Both solved the held-out MINOS repair and ZH filename repair.  Base
+also correctly recognized the ggH-directory no-op.  This pilot therefore gives
+no evidence that the current SFT improves strict accuracy.  The difference is
+one task and is far too small for a stable effect estimate.  The most useful
+result is diagnostic: low validation loss coexists with end-to-end regressions.
+A larger held-out evaluation and training directly on more Qwen Code-native
+successful and recovery traces are required before tuning scale or epochs.
+
+\section{What ``strict success'' means}
+A task passes only when all gates pass:
+\begin{itemize}
+  \item \textbf{requested state}: the named setting has the requested semantic value;
+  \item \textbf{preservation}: unrelated settings were not changed;
+  \item \textbf{static validity}: the Python parser and requested evidence checks pass;
+  \item \textbf{observed verification}: after its final edit, the agent successfully
+        ran the exact requested verifier command;
+  \item \textbf{native scope}: only allowed native tools and workspace-local paths were used.
+\end{itemize}
+A plausible final message or a parseable file alone is insufficient.  Static
+validity is the SFT-stage target.  Running TRExFitter and comparing output
+histograms is a stronger semantic-equivalence reward intended for later RL.
+
+\section{Diagnostic gates and examples}
+\begin{tabularx}{\textwidth}{@{}p{.18\textwidth}p{.26\textwidth}X@{}}
+\toprule
+Failure & Meaning & Concrete matched-run example \\
+\midrule
+Editing / contract & The tools ran, but the requested semantic value was wrong,
+or unrelated analysis choices changed. & Base: scan-steps task left
+\code{doLHscan} wrong. SFT: MINOS task wrote the wrong \code{UseMinos};
+scan-steps also changed \code{FitType}. \\
+Protocol & The agent did not complete the required edit--verify workflow. &
+Base attempted unavailable \code{grep\_search} on the MINOS task and never
+completed verification. SFT made edits but did not obtain a successful exact
+verifier call on the CPU-repair task. \\
+Verifier / evidence & The exact verifier did not succeed after the last edit,
+or its requested evidence level failed. & Base MINOS ended after an API error
+before verification. SFT ggH no-op damaged available-directory settings, so
+static validation and evidence failed. \\
+Scope & A successful command or path escaped the disposable task workspace, or
+an unapproved native tool was requested. & Base CPU repair attempted
+\code{grep\_search} and an outside path. SFT CPU repair referenced a path outside
+the task workspace. \\
+Harness / API & The native CLI or model endpoint ended abnormally; this is kept
+separate from edit correctness. & Base MINOS returned an API 400 after editing.
+SFT ggH no-op ended with a CLI error after its incorrect edits. \\
+\bottomrule
+\end{tabularx}
+
+Failures can overlap: for example, a wrong edit can make validation fail, and a
+subsequent out-of-scope command can also fail the protocol gate.  Keeping the
+gates separate prevents an editing regression from being mislabeled as mere
+tool syntax trouble.
+
+\section{Successful and recovery examples}
+The clean Qwen validation example reads the Fit block, uncomments
+\code{UseMinos: mu\_H}, runs the exact verifier, observes success, and reports
+only that evidence.  The admitted training recovery first makes two failed
+path reads (no side effects), then reads the workspace file, repairs
+\code{FitRegion}, and observes a successful verifier result.  Recovery traces
+are valuable because a coding agent must respond to real tool errors; they are
+admitted only when the final state passes the independent scorer.
+
+\section{Conclusions and next experiment}
+The replacement architecture is now credible: exact native Qwen Code schemas,
+real native execution, model-neutral storage, Qwen-owned rendering, and an
+independent domain scorer.  The first 4B LoRA result is negative on strict
+accuracy despite a good loss curve.  The next defensible experiment is to add
+more independently passing native Qwen successes and recoveries, reserve a
+larger untouched test set, and compare base/SFT with multiple decoding seeds.
+Only then should we attribute changes to LoRA rank, learning rate, model size,
+or additional epochs.
+
+\section*{Reproducibility pointers}
+Dataset: \href{https://huggingface.co/datasets/cxyang-ucb/hyy-sft}{cxyang-ucb/hyy-sft}.
+The repository records the Qwen Code 0.23.4 tool snapshot, canonical split
+hashes, VERL checkpoint metrics, native event streams, exact task workspaces,
+and independent per-task scores.  Checkpoints and raw event streams are kept in
+local artifacts and are not part of the public dataset.
+
+\end{document}

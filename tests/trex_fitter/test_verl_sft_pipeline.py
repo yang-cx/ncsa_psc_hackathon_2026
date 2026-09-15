@@ -12,7 +12,7 @@ DATASET = PROJECT / "data/datasets/hyy-trexfitter-agent-trajectories/data/main-a
 
 
 def test_replay_approved_splits_pass_model_neutral_schema():
-    for split, expected in (("train", 129), ("validation", 38)):
+    for split, expected in (("train", 130), ("validation", 39)):
         rows = validate_records(read_jsonl(DATASET / f"{split}.jsonl"))
         assert len(rows) == expected
 
@@ -45,6 +45,21 @@ def test_verl_launcher_uses_native_sft_trainer_and_hard_gates():
     assert 'trainer.nnodes=$NNODES' in launcher
     assert 'trainer.n_gpus_per_node=$NPROC_PER_NODE' in launcher
     assert '--master_addr="$MASTER_ADDR"' in launcher
+    assert "artifacts/logs/hydra" in launcher
+    assert 'hydra.run.dir=$HYDRA_RUN_DIR' in launcher
+    assert "oc.env:RANK,0" in launcher
+
+
+def test_verl_launchers_keep_hydra_metadata_under_artifacts():
+    rl_launcher = (PROJECT / "training/scripts/run_verl_rl.sh").read_text(encoding="utf-8")
+    slurm_worker = (
+        PROJECT / "training/scripts/run_verl_sft_slurm_worker.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "artifacts/logs/hydra" in rl_launcher
+    assert 'hydra.run.dir="$HYDRA_RUN_DIR"' in rl_launcher
+    assert "oc.env:RANK,0" in rl_launcher
+    assert "HYDRA_RUN_ID" in slurm_worker
 
 
 def test_verl_preflight_checks_full_render_and_assistant_mask():
@@ -52,3 +67,10 @@ def test_verl_preflight_checks_full_render_and_assistant_mask():
     assert '"full_render_equals_verl_turn_render": True' in preflight
     assert '"assistant_only_loss": True' in preflight
     assert '"no_thinking": True' in preflight
+
+
+def test_verl_adapter_requires_qwen_code_native_contract():
+    adapter = (PROJECT / "training/verl_dataset.py").read_text(encoding="utf-8")
+    assert 'allowed = {"read_file", "edit", "run_shell_command"}' in adapter
+    assert '!= "qwen-code-native-tools/v1"' in adapter
+    assert '!= "canonical-code-tools/v1"' not in adapter

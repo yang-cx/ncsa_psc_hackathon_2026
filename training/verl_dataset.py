@@ -101,24 +101,25 @@ class TReXNativeToolSFTDataset(MultiTurnSFTDataset):
         )
 
     def validate_native_tool_contract(self):
-        """Require the model-neutral generic coding-tool contract."""
+        """Require the pinned Qwen Code three-tool training contract."""
         required_columns = {"tool_contract"}
         missing_columns = required_columns - set(self.dataframe.columns)
         if self.tools is None or missing_columns:
             raise ValueError(
                 f"native-tool SFT is missing tools or columns: {sorted(missing_columns)}"
             )
-        allowed = {"shell", "read_file", "search_files", "apply_patch"}
+        allowed = {"read_file", "edit", "run_shell_command"}
         forbidden = {
             "list_blocks", "search_settings", "read_config", "verify_config",
-            "bash", "read", "edit", "write", "glob", "grep", "list",
+            "shell", "search_files", "apply_patch", "bash", "read", "write",
+            "glob", "grep", "list",
         }
         for index, (manifest, messages) in enumerate(zip(self.tools, self.messages, strict=True)):
-            if self.dataframe.iloc[index]["tool_contract"] != "canonical-code-tools/v1":
+            if self.dataframe.iloc[index]["tool_contract"] != "qwen-code-native-tools/v1":
                 raise ValueError(f"row {index}: unexpected native tool contract")
             names = {item.get("function", {}).get("name") for item in manifest}
             if names & forbidden or names != allowed:
-                raise ValueError(f"row {index}: invalid canonical tool manifest: {sorted(names)}")
+                raise ValueError(f"row {index}: invalid Qwen Code tool manifest: {sorted(names)}")
             calls = [call for message in messages for call in (message.get("tool_calls") or [])]
             called = {call.get("function", {}).get("name") for call in calls}
             if not called <= names:

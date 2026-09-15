@@ -10,6 +10,45 @@ configs, or run TRExFitter.
 task schema. It turns those structured records into prompts, but uses the same
 model runtime.
 
+## Native coding-agent comparison
+
+Use `run_native_agent_study.py` for agent comparisons. It loads the same
+checked-in user prompt and the same isolated `analysis.config` fixture for every
+harness. Qwen runs use a short, repository-pinned system instruction whose
+workspace path is substituted at launch; Qwen Code still owns the tool
+descriptions, call parser, execution loop, and tool-result envelope.
+
+For a local Qwen3.5 checkpoint, first expose it through an OpenAI-compatible
+server with native tool-call parsing enabled. With vLLM, the important flags are:
+
+```bash
+vllm serve /path/to/qwen-checkpoint \
+  --served-model-name hyy-qwen \
+  --enable-auto-tool-choice \
+  --tool-call-parser qwen3_coder \
+  --reasoning-parser qwen3
+```
+
+Then run the task through Qwen Code itself:
+
+```bash
+python inference/run_native_agent_study.py \
+  --harness qwen \
+  --model hyy-qwen \
+  --qwen-base-url http://localhost:8000/v1 \
+  --split validation \
+  --output-dir artifacts/native-agent/qwen35-base
+```
+
+Qwen Code supplies and executes its native `read_file`, `edit`, and
+`run_shell_command` tools. The runner pins Qwen Code 0.23.4 behavior to a 4,096
+token per-turn output ceiling and an isolated-workspace `yolo` approval mode;
+the latter cannot modify the source checkout. The evaluator does not parse or apply patches. Run a
+trained checkpoint by changing only the model served at the endpoint and the
+output directory. Codex and OpenCode use the same entry point with
+`--harness codex` and `--harness opencode`; their native tool interfaces are
+left intact.
+
 ## Checkpoint format
 
 The SFT launcher saves verl's resumable state, then automatically converts its
@@ -32,6 +71,17 @@ The scripts resolve the latter automatically. For an adapter-only export, the
 runtime loads its base model and applies the adapter automatically. A direct
 adapter directory also works; use `--base-model Qwen/Qwen3.5-0.8B` if the
 adapter metadata does not identify its base model.
+
+For Qwen3.5 hybrid models, the tested vLLM release cannot apply every trained
+LoRA target dynamically. First run VERL's `model_merger` to reconstruct the
+adapter from FSDP shards, then create a merged serving directory:
+
+```bash
+python training/merge_lora_adapter.py \
+  --base-model /path/to/pinned/qwen/snapshot \
+  --adapter /path/to/global_step_N/huggingface/lora_adapter \
+  --output-dir /path/to/global_step_N/huggingface-merged
+```
 
 For a checkpoint made before this launcher update, create the export once:
 

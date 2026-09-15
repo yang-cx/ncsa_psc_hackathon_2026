@@ -2,7 +2,7 @@
 
 We are building a starting point for teaching a small language model to operate a high-energy-physics analysis environment through agentic tools.
 
-We will release several small, verified one-turn datasets: TRExFitter config work, ROOT-file inspection and modification, ATLAS Open Data knowledge, and execution/result interpretation. Each supported config task has two semantic renderings: a model-neutral coding-agent trajectory using one generic tool interface, plus a direct natural-language-to-config response. Codex and OpenCode may supply verified source runs, but their harness-specific events are normalized before SFT. The selected checkpoint tokenizer—not the dataset—creates Qwen-specific tokens. All trajectory variants share a logical task ID and split. Compatible family releases are then composed into a separate long-horizon dataset.
+We will release several small, verified one-turn datasets: TRExFitter config work, ROOT-file inspection and modification, ATLAS Open Data knowledge, and execution/result interpretation. Each supported config task has two semantic renderings: a Qwen Code-native coding-agent trajectory plus a direct natural-language-to-config response. Codex and OpenCode may supply verified source runs, but Qwen SFT calls use Qwen Code's own tool names and arguments. The selected checkpoint tokenizer—not the dataset—creates Qwen-specific tokens. All trajectory variants share a logical task ID and split. Compatible family releases are then composed into a separate long-horizon dataset.
 
 Our first starting point is the working H→γγ config at [data/configs/examples/hyy.config](data/configs/examples/hyy.config).
 
@@ -60,7 +60,7 @@ The local `.venv/` is ignored; commit dependency changes with the lockfile.
 | [training/](training/README.md) | Qwen native-agent SFT and later RL with VERL |
 | [inference/](inference/README.md) | Testing a trained model |
 | [docs/ATLAS_WORKFLOW.md](docs/ATLAS_WORKFLOW.md) | Reproduce the ATLAS command benchmark |
-| [Hyy TRExFitter agent dataset](data/datasets/hyy-trexfitter-agent-trajectories/README.md) | Replay-approved generic-tool trajectories, Parquet mirrors, and dataset audit tools |
+| [Hyy TRExFitter agent dataset](data/datasets/hyy-trexfitter-agent-trajectories/README.md) | Replay-approved Qwen Code-native trajectories, Parquet mirrors, and dataset audit tools |
 | [docs/](docs/HACKATHON.md) | The plan and task list |
 
 Start with the [hackathon plan](docs/HACKATHON.md), then pick a task from the [task board](docs/TASK_BOARD.md).
